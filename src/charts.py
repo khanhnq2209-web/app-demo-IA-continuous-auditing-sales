@@ -20,8 +20,8 @@ SEV_COLOR = {"do": RAG_COLORS["do"], "vang": RAG_COLORS["vang"],
 SEV_LABEL = {"do": "🔴 Cao", "vang": "🟡 Trung bình", "xanh": "🟢 Thông tin"}
 
 STEP_LABEL = {
-    "tham_dinh_da": "Thẩm định DA", "tgd_duyet": "TGĐ duyệt",
-    "xac_nhan_coc": "Xác nhận cọc", "check_cong_no": "Check công nợ",
+    "tham_dinh_da": "Thẩm định dự án", "tgd_duyet": "Tổng Giám đốc duyệt",
+    "xac_nhan_coc": "Xác nhận cọc", "check_cong_no": "Kiểm tra công nợ",
     "dat_don": "Đặt đơn", "giao_hang": "Giao hàng", "thanh_toan": "Thanh toán",
 }
 
@@ -39,15 +39,47 @@ def _empty(msg: str = "Không có dữ liệu") -> go.Figure:
 # Enrich: gắn nhân viên KD / khu vực vào exception (qua đơn hàng)
 # ---------------------------------------------------------------------------
 def enrich_exceptions(exc: pd.DataFrame, data: dict) -> pd.DataFrame:
+    """Gắn `ma_kh`, `nhan_vien_kd`, `khu_vuc` cho từng exception.
+
+    Nguồn khu vực/nhân viên KD lấy từ đơn hàng theo nhiều khóa (đơn → báo giá →
+    khách hàng) để hạn chế tối đa ô '(không xác định)' cho exception cấp Báo giá/
+    Dự án/Khách hàng (vốn không gắn trực tiếp với một đơn).
+    """
     if exc is None or exc.empty:
         return exc
-    if "nhan_vien_kd" in exc.columns and "khu_vuc" in exc.columns:
+    if {"nhan_vien_kd", "khu_vuc", "ma_kh"}.issubset(exc.columns):
         return exc  # đã enrich rồi — idempotent
-    o = data["order"][["ma_don", "nhan_vien_kd", "khu_vuc"]].drop_duplicates("ma_don")
-    m = exc.merge(o, left_on="doi_tuong_id", right_on="ma_don", how="left")
-    m["nhan_vien_kd"] = m["nhan_vien_kd"].fillna("(không gắn đơn)")
-    m["khu_vuc"] = m["khu_vuc"].fillna("(không gắn đơn)")
-    return m
+    o = data["order"]
+    en = exc.copy()
+    en["ma_kh"] = en["kh_da"].astype(str).str.extract(r"(KH\d+)")[0]
+    da_owner = dict(zip(data["du_an_master"]["ma_da"].astype(str),
+                        data["du_an_master"]["chu_dau_tu"].astype(str)))
+
+    def kh_of(row):
+        if isinstance(row["ma_kh"], str) and row["ma_kh"]:
+            return row["ma_kh"]
+        oid = str(row["doi_tuong_id"])
+        if oid in da_owner and da_owner[oid].startswith("KH"):
+            return da_owner[oid]
+        return oid if oid.startswith("KH") else None
+
+    en["ma_kh"] = en.apply(kh_of, axis=1)
+    ord_nv = dict(zip(o["ma_don"], o["nhan_vien_kd"]))
+    ord_kv = dict(zip(o["ma_don"], o["khu_vuc"]))
+    bg = o.drop_duplicates("ma_bg")
+    bg_nv, bg_kv = dict(zip(bg["ma_bg"], bg["nhan_vien_kd"])), dict(zip(bg["ma_bg"], bg["khu_vuc"]))
+    kh = o.drop_duplicates("ma_kh")
+    kh_nv, kh_kv = dict(zip(kh["ma_kh"], kh["nhan_vien_kd"])), dict(zip(kh["ma_kh"], kh["khu_vuc"]))
+
+    def resolve(row, omap, bmap, kmap):
+        oid = row["doi_tuong_id"]
+        return (omap.get(oid) or bmap.get(oid)
+                or (kmap.get(row["ma_kh"]) if row["ma_kh"] else None)
+                or "(không xác định)")
+
+    en["nhan_vien_kd"] = en.apply(lambda r: resolve(r, ord_nv, bg_nv, kh_nv), axis=1)
+    en["khu_vuc"] = en.apply(lambda r: resolve(r, ord_kv, bg_kv, kh_kv), axis=1)
+    return en
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +122,7 @@ def rag_heatmap(exc: pd.DataFrame, data: dict, col_dim: str = "khu_vuc") -> go.F
         hovertemplate="Rule %{y} · %{x}<br>Số exception: %{z}<extra></extra>",
         colorbar=dict(title="Số EX")))
     fig.update_layout(template=TEMPLATE, height=420,
-                      title="RAG Heatmap — Rule × Khu vực (click chọn ở bộ lọc bên dưới)",
+                      title="Bản đồ nhiệt rủi ro — Rule × Khu vực (dùng bộ lọc phía trên)",
                       xaxis_title=col_dim, yaxis_title="Rule")
     return fig
 
@@ -99,13 +131,15 @@ def rag_heatmap(exc: pd.DataFrame, data: dict, col_dim: str = "khu_vuc") -> go.F
 # R3 — Tỷ lệ sử dụng tín dụng (px.bar ngang, màu theo ngưỡng 85/100, add_vline)
 # ---------------------------------------------------------------------------
 def credit_util_bar(data: dict, warn: float = 0.85, violate: float = 1.0) -> go.Figure:
+    """Tỷ lệ sử dụng tín dụng hiện tại = dư nợ / hạn mức (theo khách hàng).
+
+    Dùng dư nợ thực tế (không cộng dồn toàn bộ lịch sử đơn) nên thang đo gọn 0–~110%.
+    """
     cn = data["cong_no"].copy()
-    orders = data["order"]
     if cn.empty:
         return _empty()
-    new_by_kh = orders.groupby("ma_kh")["gia_tri"].sum()
-    cn["su_dung"] = (cn["du_no"] + cn["ma_kh"].map(new_by_kh).fillna(0)) / cn["han_muc"]
-    cn = cn.sort_values("su_dung", ascending=True)
+    cn["su_dung"] = cn["du_no"] / cn["han_muc"].replace(0, float("nan"))
+    cn = cn.dropna(subset=["su_dung"]).sort_values("su_dung", ascending=True)
 
     def color(u):
         return RAG_COLORS["do"] if u > violate else (
@@ -114,14 +148,17 @@ def credit_util_bar(data: dict, warn: float = 0.85, violate: float = 1.0) -> go.
     fig = go.Figure(go.Bar(
         x=cn["su_dung"], y=cn["ma_kh"], orientation="h",
         marker_color=[color(u) for u in cn["su_dung"]],
-        hovertemplate="%{y}<br>Sử dụng tín dụng: %{x:.0%}<extra></extra>"))
+        customdata=cn[["du_no", "han_muc"]].values,
+        hovertemplate="%{y}<br>Sử dụng tín dụng: %{x:.0%}"
+                      "<br>Dư nợ: %{customdata[0]:,.0f}"
+                      "<br>Hạn mức: %{customdata[1]:,.0f}<extra></extra>"))
     fig.add_vline(x=warn, line_dash="dash", line_color=RAG_COLORS["vang"],
-                  annotation_text=f"{warn:.0%}")
+                  annotation_text=f"Cảnh báo {warn:.0%}")
     fig.add_vline(x=violate, line_dash="dash", line_color=RAG_COLORS["do"],
-                  annotation_text=f"{violate:.0%}")
+                  annotation_text=f"Vi phạm {violate:.0%}")
     fig.update_layout(template=TEMPLATE, height=360,
                       title="R3 — Tỷ lệ sử dụng tín dụng theo khách hàng",
-                      xaxis_tickformat=".0%", xaxis_title="(dư nợ + đơn)/hạn mức",
+                      xaxis_tickformat=".0%", xaxis_title="Dư nợ / hạn mức",
                       yaxis_title="Khách hàng")
     return fig
 
@@ -165,7 +202,8 @@ def bg_validity_funnel(data: dict, lead: int = 7) -> go.Figure:
     days_left = (m["ngay_het_hieu_luc"] - m["ngay_dat"]).dt.days
     dung_han = int((days_left >= lead).sum())
     fig = go.Figure(go.Funnel(
-        y=["BG phát hành", "BG còn hiệu lực", "BG có đơn", f"Đơn đặt ≥{lead}d trước hạn"],
+        y=["Báo giá phát hành", "Báo giá còn hiệu lực", "Báo giá có đơn",
+           f"Đơn đặt ≥{lead} ngày trước hạn"],
         x=[total, con_hl, co_don, dung_han],
         marker={"color": [RAG_COLORS["xanh"], "#9cc06f", RAG_COLORS["vang"],
                           RAG_COLORS["do"]]},
@@ -176,7 +214,49 @@ def bg_validity_funnel(data: dict, lead: int = 7) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
-# R6 — Sankey luồng bước control (skip/đảo bước)
+# R4 (Mục tiêu 2) — Báo giá sắp hết hiệu lực: đã lấy vs còn lại theo từng BG
+# ---------------------------------------------------------------------------
+def bg_fulfillment_bar(data: dict, near_days: int = 45, top_n: int = 15) -> go.Figure:
+    """Với mỗi báo giá sắp hết hiệu lực (trong `near_days` ngày tới): đã lấy được
+    bao nhiêu hàng (tổng giá trị đơn) và còn lại bao nhiêu so với giá trị báo giá."""
+    bg = data["bao_gia"].copy()
+    orders = data["order"]
+    if bg.empty:
+        return _empty()
+    today = pd.Timestamp(pd.Timestamp.now().date())
+    bg["het"] = pd.to_datetime(bg["ngay_het_hieu_luc"])
+    bg["days_left"] = (bg["het"] - today).dt.days
+    near = bg[(bg["days_left"] >= 0) & (bg["days_left"] <= near_days)].copy()
+    if near.empty:                       # fallback: các BG còn hiệu lực gần hết nhất
+        near = bg[bg["days_left"] >= 0].copy()
+    if near.empty:
+        return _empty("Không có báo giá còn hiệu lực")
+    taken = orders.groupby("ma_bg")["gia_tri"].sum()
+    near["da_lay"] = near["ma_bg"].map(taken).fillna(0)
+    near["con_lai"] = (near["gia_tri"] - near["da_lay"]).clip(lower=0)
+    near["pct"] = near["da_lay"] / near["gia_tri"].replace(0, float("nan"))
+    near = near.sort_values("days_left").head(top_n).iloc[::-1]
+    near["nhan"] = near["ma_bg"] + " (còn " + near["days_left"].astype(int).astype(str) + " ngày)"
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=near["nhan"], x=near["da_lay"], name="Đã lấy", orientation="h",
+        marker_color=RAG_COLORS["xanh"], customdata=near["pct"],
+        hovertemplate="%{y}<br>Đã lấy: %{x:,.0f} (%{customdata:.0%})<extra></extra>"))
+    fig.add_trace(go.Bar(
+        y=near["nhan"], x=near["con_lai"], name="Còn lại", orientation="h",
+        marker_color=RAG_COLORS["vang"],
+        hovertemplate="%{y}<br>Còn lại: %{x:,.0f}<extra></extra>"))
+    fig.update_layout(
+        template=TEMPLATE, height=400, barmode="stack",
+        title=f"R4 — Báo giá sắp hết hiệu lực (≤{near_days} ngày): đã lấy vs còn lại",
+        xaxis_title="Giá trị (VND)", yaxis_title="Báo giá",
+        legend=dict(orientation="h", y=1.08))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# R6 — Sankey luồng bước kiểm soát (skip/đảo bước)
 # ---------------------------------------------------------------------------
 def order_sankey(data: dict) -> go.Figure:
     ev = data["event_log"]
@@ -204,7 +284,7 @@ def order_sankey(data: dict) -> go.Figure:
         link=dict(source=src, target=tgt, value=val, color=colors,
                   hovertemplate="%{source.label} → %{target.label}: %{value} đơn<extra></extra>")))
     fig.update_layout(template=TEMPLATE, height=360,
-                      title="R6 — Luồng bước control (đỏ = nhảy/bỏ bước)")
+                      title="R6 — Luồng bước kiểm soát (đỏ = nhảy/bỏ bước)")
     return fig
 
 
@@ -220,9 +300,9 @@ def copper_overlay(data: dict) -> go.Figure:
     vol = (orders.assign(ngay=pd.to_datetime(orders["ngay_dat"]))
            .groupby("ngay")["gia_tri"].sum().reset_index())
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Bar(x=vol["ngay"], y=vol["gia_tri"], name="KL đặt (VND)",
+    fig.add_trace(go.Bar(x=vol["ngay"], y=vol["gia_tri"], name="Khối lượng đặt (VND)",
                          marker_color=RAG_COLORS["vang"], opacity=0.7,
-                         hovertemplate="%{x|%d/%m}<br>KL: %{y:,.0f}<extra></extra>"),
+                         hovertemplate="%{x|%d/%m}<br>Khối lượng: %{y:,.0f}<extra></extra>"),
                   secondary_y=False)
     fig.add_trace(go.Scatter(x=gia["ngay"], y=gia["gia_dong"], name="Giá đồng",
                              line=dict(color=RAG_COLORS["do"], width=2),
@@ -270,7 +350,7 @@ def top_violators(exc: pd.DataFrame, data: dict, by: str = "nhan_vien_kd",
     en = enrich_exceptions(exc, data)
     g = (en.groupby(by).size().reset_index(name="so_ex")
          .sort_values("so_ex", ascending=True).tail(top_n))
-    label = "Nhân viên KD" if by == "nhan_vien_kd" else "Khu vực"
+    label = "Nhân viên Kinh doanh" if by == "nhan_vien_kd" else "Khu vực"
     fig = go.Figure(go.Bar(
         x=g["so_ex"], y=g[by], orientation="h",
         marker_color=RAG_COLORS["do"],
@@ -300,10 +380,10 @@ def channel_stuffing_bar(data: dict, mult: float = 3.0, horizon: int = 30,
     g["mau"] = np.where(g["ty_le"] > mult, RAG_COLORS["do"], RAG_COLORS["xanh"])
     fig = go.Figure(go.Bar(
         x=g["nhan"], y=g["ty_le"], marker_color=g["mau"],
-        hovertemplate="%{x}<br>SL/run-rate: %{y:.1f}×<extra></extra>"))
+        hovertemplate="%{x}<br>Số lượng / tốc độ bán: %{y:.1f} lần<extra></extra>"))
     fig.add_hline(y=mult, line_dash="dash", line_color=RAG_COLORS["do"],
-                  annotation_text=f"{mult:g}× run-rate")
+                  annotation_text=f"{mult:g} lần tốc độ bán")
     fig.update_layout(template=TEMPLATE, height=340,
-                      title="R7 — SL đặt so với run-rate (đại lý · SKU)",
-                      xaxis_title="", yaxis_title="Bội số run-rate")
+                      title="R7 — Số lượng đặt so với tốc độ bán (đại lý · mã hàng)",
+                      xaxis_title="", yaxis_title="Bội số tốc độ bán")
     return fig

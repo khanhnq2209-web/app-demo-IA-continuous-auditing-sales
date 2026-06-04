@@ -130,7 +130,6 @@ def generate() -> dict[str, pd.DataFrame]:
     df_matrix = pd.DataFrame(
         [{"vai_tro": r[0], "han_muc_gia_tri": r[1], "han_muc_ck": r[2]}
          for r in ROLES])
-    role_by_name = {r[0]: r for r in ROLES}
 
     # -- gia_dong (chuỗi 200 ngày, có 2 cú nhảy giá) -------------------------
     start_price_day = REF_DATE - timedelta(days=200)

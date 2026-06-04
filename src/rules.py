@@ -14,11 +14,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
-from .schema import (BG_VALIDITY_DAYS, CONTROL_STEPS, EXCEPTION_COLUMNS,
-                     RULE_REGISTRY)
+from .schema import CONTROL_STEPS, EXCEPTION_COLUMNS, RULE_REGISTRY
 
 
 def _today() -> pd.Timestamp:
@@ -57,14 +55,14 @@ def r1(data, th) -> list[dict]:
         if r["ma_khung"] in khung.index:
             muc = khung.loc[r["ma_khung"], "muc_ck"]
             if r["pct_ck"] > muc:
-                reasons.append(f"CK đề xuất {r['pct_ck']}% > khung {muc}% ({r['ma_khung']})")
+                reasons.append(f"Chiết khấu đề xuất {r['pct_ck']}% > khung {muc}% ({r['ma_khung']})")
         # Người duyệt vượt hạn mức
         vt = r["vai_tro_nguoi_duyet"]
         if vt in matrix.index:
             lim_ck = matrix.loc[vt, "han_muc_ck"]
             lim_val = matrix.loc[vt, "han_muc_gia_tri"]
             if r["pct_ck"] > lim_ck:
-                reasons.append(f"CK {r['pct_ck']}% > hạn mức vai trò {vt} ({lim_ck}%)")
+                reasons.append(f"Chiết khấu {r['pct_ck']}% > hạn mức vai trò {vt} ({lim_ck}%)")
             if r["gia_tri"] > lim_val:
                 reasons.append(f"Giá trị {r['gia_tri']:,.0f} > hạn mức vai trò {vt}")
         # Thiếu lưu vết duyệt (chỉ Zalo, không chứng từ)
@@ -72,7 +70,7 @@ def r1(data, th) -> list[dict]:
                 and str(r.get("co_chung_tu")) == "N":
             reasons.append("Duyệt qua Zalo, thiếu chứng từ chính thức")
         if reasons:
-            out.append(_exc("R1", "BG", r["ma_bg"], f"{r['ma_kh']}/{r['ma_da']}",
+            out.append(_exc("R1", "Báo giá", r["ma_bg"], f"{r['ma_kh']}/{r['ma_da']}",
                             r["gia_tri"], " · ".join(reasons), r.get("ngay_tao")))
     return out
 
@@ -97,7 +95,7 @@ def r2(data, th) -> list[dict]:
         threshold = band_pct if total >= band_val else pct_th
         if ratio > threshold:
             kh = orders.loc[ma_don, "ma_kh"] if ma_don in orders.index else "-"
-            out.append(_exc("R2", "đơn", ma_don, kh, total,
+            out.append(_exc("R2", "Đơn hàng", ma_don, kh, total,
                             f"Dây dân dụng {ratio:.0%} > ngưỡng {threshold:.0%} "
                             f"(đơn {total:,.0f})"))
     return out
@@ -113,19 +111,18 @@ def r3(data, th) -> list[dict]:
     violate = th.get("violate_pct", 1.00)
     max_tc = th.get("max_tra_cham_days", 60)
     out = []
-    # (1) Tỷ lệ sử dụng tín dụng theo KH: (dư nợ + đơn mới)/hạn mức — 1 exception/KH
-    new_by_kh = orders.groupby("ma_kh")["gia_tri"].sum()
+    # (1) Tỷ lệ sử dụng tín dụng hiện tại theo KH = dư nợ/hạn mức — 1 exception/KH
     for _, c in cn.iterrows():
         kh, du_no, han_muc = c["ma_kh"], c["du_no"], c["han_muc"]
         if han_muc <= 0:
             continue
-        util = (du_no + float(new_by_kh.get(kh, 0))) / han_muc
+        util = du_no / han_muc
         if util > violate:
-            out.append(_exc("R3", "KH", kh, kh, du_no,
+            out.append(_exc("R3", "Khách hàng", kh, kh, du_no,
                             f"Sử dụng tín dụng {util:.0%} > 100% — vi phạm "
                             f"(dư nợ {du_no:,.0f}/hạn mức {han_muc:,.0f})"))
         elif util > warn:
-            out.append(_exc("R3", "KH", kh, kh, du_no,
+            out.append(_exc("R3", "Khách hàng", kh, kh, du_no,
                             f"Sử dụng tín dụng {util:.0%} > {warn:.0%} — cảnh báo "
                             f"(dư nợ {du_no:,.0f}/hạn mức {han_muc:,.0f})"))
     # (2) Trả chậm vi phạm điều kiện — 1 exception/đơn
@@ -137,11 +134,11 @@ def r3(data, th) -> list[dict]:
         co_bl = str(cn_idx.loc[kh, "co_bao_lanh"]) if kh in cn_idx.index else "N"
         reasons = []
         if o.get("so_ngay_tra_cham", 0) > max_tc:
-            reasons.append(f"Trả chậm {o['so_ngay_tra_cham']}d > {max_tc}d")
+            reasons.append(f"Trả chậm {o['so_ngay_tra_cham']} ngày > {max_tc} ngày")
         if co_bl == "N":
             reasons.append("Trả chậm nhưng thiếu bảo lãnh/ký quỹ")
         if reasons:
-            out.append(_exc("R3", "đơn", o["ma_don"], kh, o["gia_tri"],
+            out.append(_exc("R3", "Đơn hàng", o["ma_don"], kh, o["gia_tri"],
                             " · ".join(reasons), o.get("ngay_dat")))
     return out
 
@@ -164,13 +161,13 @@ def r4(data, th) -> list[dict]:
         if pd.notna(het) and pd.notna(ngay_dat):
             days_left = (het - ngay_dat).days
             if days_left < 0:
-                reasons.append(f"BG đã hết hạn {abs(days_left)}d vẫn phát sinh đơn")
+                reasons.append(f"Báo giá đã hết hạn {abs(days_left)} ngày vẫn phát sinh đơn")
             elif days_left < lead:
-                reasons.append(f"Đặt đơn chỉ còn {days_left}d trước hết hạn (<{lead}d)")
+                reasons.append(f"Đặt đơn chỉ còn {days_left} ngày trước hết hạn (dưới {lead} ngày)")
         if gia_han == "Y":
-            reasons.append("BG có gia hạn hiệu lực (bị cấm)")
+            reasons.append("Báo giá có gia hạn hiệu lực (bị cấm)")
         if reasons:
-            out.append(_exc("R4", "đơn", o["ma_don"], o["ma_kh"], o["gia_tri"],
+            out.append(_exc("R4", "Đơn hàng", o["ma_don"], o["ma_kh"], o["gia_tri"],
                             " · ".join(reasons), ngay_dat))
     return out
 
@@ -200,9 +197,9 @@ def r5(data, th) -> list[dict]:
             reasons.append("Trùng địa chỉ")
         gt = pd.to_numeric(r["gia_tri_da"], errors="coerce")
         if pd.notna(gt) and gt < min_val and r["ma_da"] in used_da:
-            reasons.append(f"Giá trị DA {gt:,.0f} <{min_val:,.0f} nhưng vẫn nhận giá dự án")
+            reasons.append(f"Giá trị dự án {gt:,.0f} < {min_val:,.0f} nhưng vẫn nhận giá dự án")
         if reasons:
-            out.append(_exc("R5", "DA", r["ma_da"], r["ma_da"],
+            out.append(_exc("R5", "Dự án", r["ma_da"], r["ma_da"],
                             gt if pd.notna(gt) else 0,
                             " · ".join(reasons)))
     return out
@@ -229,11 +226,11 @@ def r6(data, th) -> list[dict]:
         # đảo thứ tự so với chuẩn
         seq = [canonical[s] for s in present if s in canonical]
         if any(seq[i] > seq[i + 1] for i in range(len(seq) - 1)):
-            reasons.append("Sai thứ tự bước control")
+            reasons.append("Sai thứ tự bước kiểm soát")
         if reasons:
             kh = orders.loc[ma_don, "ma_kh"] if ma_don in orders.index else "-"
             gt = orders.loc[ma_don, "gia_tri"] if ma_don in orders.index else 0
-            out.append(_exc("R6", "đơn", ma_don, kh, gt, " · ".join(reasons)))
+            out.append(_exc("R6", "Đơn hàng", ma_don, kh, gt, " · ".join(reasons)))
     return out
 
 
@@ -259,9 +256,9 @@ def r7(data, th) -> list[dict]:
         run_rate = tk.loc[(dai_ly, sku), "toc_do_ban_bq"] * horizon
         if run_rate > 0 and sl > mult * run_rate:
             out.append(_exc(
-                "R7", "đơn", ma_don, dai_ly, orders.loc[ma_don, "gia_tri"],
-                f"SKU {sku}: đặt {sl:,.0f} > {mult:g}× run-rate {run_rate:,.0f} "
-                f"({horizon}d) tại {dai_ly}"))
+                "R7", "Đơn hàng", ma_don, dai_ly, orders.loc[ma_don, "gia_tri"],
+                f"Mã hàng {sku}: đặt {sl:,.0f} > {mult:g} lần tốc độ bán "
+                f"{run_rate:,.0f} ({horizon} ngày) tại {dai_ly}"))
     return out
 
 
@@ -297,9 +294,9 @@ def r8(data, th) -> list[dict]:
         rise = future.max() / base.iloc[-1] - 1
         if rise >= jump_pct:
             out.append(_exc(
-                "R8", "đơn", o["ma_don"], o["ma_kh"], o["gia_tri"],
-                f"Đơn lớn bất thường (z={z:.1f}) ngay trước giá đồng +{rise:.1%} "
-                f"trong {window}d", o["ngay_dat"]))
+                "R8", "Đơn hàng", o["ma_don"], o["ma_kh"], o["gia_tri"],
+                f"Đơn lớn bất thường (điểm z={z:.1f}) ngay trước giá đồng tăng "
+                f"+{rise:.1%} trong {window} ngày", o["ngay_dat"]))
     return out
 
 
@@ -329,8 +326,8 @@ def r9(data, th) -> list[dict]:
         else:
             kh_da = c.get("ma_bg")
             gt = c.get("so_tien_coc", 0)
-        out.append(_exc("R9", "đơn", ma_don or c.get("ma_bg"), kh_da, gt,
-                        f"Cọc {pct:.1%} < {min_pct:.0%} tổng BG", c.get("ngay")))
+        out.append(_exc("R9", "Đơn hàng", ma_don or c.get("ma_bg"), kh_da, gt,
+                        f"Cọc {pct:.1%} < {min_pct:.0%} tổng báo giá", c.get("ngay")))
     return out
 
 
@@ -352,8 +349,8 @@ def r10(data, th) -> list[dict]:
         ngay_dat = o["ngay_dat"]
         if pd.notna(het) and pd.notna(ngay_dat) and het < ngay_dat:
             out.append(_exc(
-                "R10", "đơn", o["ma_don"], o["ma_kh"], o["gia_tri"],
-                f"Áp khung CK {ma_khung} đã hết hiệu lực "
+                "R10", "Đơn hàng", o["ma_don"], o["ma_kh"], o["gia_tri"],
+                f"Áp khung chiết khấu {ma_khung} đã hết hiệu lực "
                 f"({pd.to_datetime(het).date()}) tại ngày đặt "
                 f"{pd.to_datetime(ngay_dat).date()}", ngay_dat))
     return out

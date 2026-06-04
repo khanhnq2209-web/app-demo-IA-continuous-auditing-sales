@@ -19,11 +19,34 @@ import streamlit as st
 
 from src import (alerts, audit, charts, config_manager, data_loader, rules,
                  store)
-from src.schema import (ALL_RULE_IDS, EXCEPTION_STATUSES, ENTITIES, RAG_COLORS,
+from src.schema import (ALL_RULE_IDS, EXCEPTION_STATUSES, ENTITIES,
                         RAG_LABEL, RULE_REGISTRY)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+
+# Nhãn mức rủi ro (hiển thị) ↔ mã nội bộ
+SEV_CODE2LABEL = {"do": "🔴 Cao", "vang": "🟡 Trung bình", "xanh": "🟢 Thông tin"}
+SEV_LABEL2CODE = {v: k for k, v in SEV_CODE2LABEL.items()}
+
+# Nhãn tiếng Việt cho các khóa ngưỡng kỹ thuật
+THRESHOLD_LABELS = {
+    "require_official_doc": "Bắt buộc chứng từ chính thức",
+    "pct_threshold": "Ngưỡng tỷ lệ dây dân dụng",
+    "size_band_pct": "Ngưỡng tỷ lệ (đơn lớn)",
+    "size_band_value": "Ngưỡng giá trị đơn lớn (VND)",
+    "warn_pct": "Ngưỡng cảnh báo tín dụng",
+    "violate_pct": "Ngưỡng vi phạm tín dụng",
+    "max_tra_cham_days": "Số ngày trả chậm tối đa",
+    "min_days_before_expiry": "Số ngày đặt đơn tối thiểu trước hạn",
+    "min_da_value": "Giá trị dự án tối thiểu (VND)",
+    "run_rate_multiplier": "Bội số tốc độ bán (cảnh báo)",
+    "run_rate_horizon_days": "Số ngày tính tốc độ bán",
+    "zscore_threshold": "Ngưỡng điểm z",
+    "window_days": "Cửa sổ quan sát (ngày)",
+    "price_jump_pct": "Ngưỡng tăng giá đồng",
+    "min_deposit_pct": "Tỷ lệ cọc tối thiểu",
+}
 
 st.set_page_config(page_title="Giám sát Bán hàng Dự án",
                    page_icon="🛰️", layout="wide")
@@ -66,16 +89,24 @@ def sev_badge(sev: str) -> str:
     return RAG_LABEL.get(sev, sev)
 
 
+def page_header(title: str):
+    """Tiêu đề trang + disclaimer dữ liệu demo."""
+    st.header(title)
+    st.caption("⚠️ **Dữ liệu mẫu — chỉ phục vụ minh hoạ (data demo only).** "
+               "Không phải dữ liệu sản xuất thật.")
+
+
 # ---------------------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------------------
 def sidebar_nav() -> tuple[str, str]:
     """Sidebar trái = điều hướng 3 tab + vai trò + nút chạy rule."""
-    st.sidebar.title("🛰️ Giám sát Bán hàng DA")
+    st.sidebar.title("🛰️ Giám sát Bán hàng Dự án")
     st.sidebar.caption("Continuous monitoring · Dây & Cáp điện")
 
-    role = st.sidebar.selectbox("Vai trò đăng nhập",
-                                ["KTNB / Admin", "BOM / TGĐ"], index=0)
+    role = st.sidebar.selectbox(
+        "Vai trò đăng nhập",
+        ["Kiểm toán nội bộ / Quản trị", "Ban điều hành / Tổng Giám đốc"], index=0)
 
     if st.sidebar.button("🔄 Run rules / Refresh", width="stretch",
                          type="primary"):
@@ -84,7 +115,7 @@ def sidebar_nav() -> tuple[str, str]:
 
     st.sidebar.divider()
     pages = (["⚙️ Config", "📊 Monitoring", "🚨 Exceptions"]
-             if role == "KTNB / Admin" else ["📊 Monitoring"])
+             if role.startswith("Kiểm toán") else ["📊 Monitoring"])
     default_page = "📊 Monitoring"        # mặc định mở Monitoring trước
     if st.session_state.get("nav_page") not in pages:
         st.session_state["nav_page"] = (default_page if default_page in pages
@@ -110,7 +141,7 @@ def render_filters(data: dict, exc: pd.DataFrame) -> dict:
                     key="flt_date")
         with c2:
             nv = sorted(data["order"]["nhan_vien_kd"].dropna().unique())
-            flt["nhan_vien"] = st.multiselect("Nhân viên KD", nv, key="flt_nv")
+            flt["nhan_vien"] = st.multiselect("Nhân viên Kinh doanh", nv, key="flt_nv")
         with c3:
             kv = sorted(data["order"]["khu_vuc"].dropna().unique())
             flt["khu_vuc"] = st.multiselect("Khu vực", kv, key="flt_kv")
@@ -122,7 +153,7 @@ def render_filters(data: dict, exc: pd.DataFrame) -> dict:
             flt["rule"] = st.multiselect("Rule", ALL_RULE_IDS, key="flt_rule")
         with c6:
             flt["sev"] = st.multiselect(
-                "Mức độ (RAG)", ["do", "vang", "xanh"],
+                "Mức độ rủi ro", ["do", "vang", "xanh"],
                 format_func=lambda s: RAG_LABEL[s], key="flt_sev")
     return flt
 
@@ -148,7 +179,7 @@ def apply_filters(exc: pd.DataFrame, data: dict, flt: dict) -> pd.DataFrame:
     if flt.get("khu_vuc"):
         en = en[en["khu_vuc"].isin(flt["khu_vuc"])]
     if flt.get("kh"):
-        en = en[en["kh_da"].isin(flt["kh"]) | en["doi_tuong_id"].isin(flt["kh"])]
+        en = en[en["ma_kh"].isin(flt["kh"]) | en["doi_tuong_id"].isin(flt["kh"])]
     if flt.get("rule"):
         en = en[en["rule_id"].isin(flt["rule"])]
     if flt.get("sev"):
@@ -159,8 +190,8 @@ def apply_filters(exc: pd.DataFrame, data: dict, flt: dict) -> pd.DataFrame:
 # ===========================================================================
 # TAB 1 — CONFIG
 # ===========================================================================
-def tab_config(data: dict):
-    st.header("⚙️ Config — Cấu hình rule, cảnh báo, nguồn dữ liệu")
+def tab_config(data: dict, exc_all: pd.DataFrame):
+    page_header("⚙️ Config — Cấu hình rule, cảnh báo, nguồn dữ liệu")
     cfg = config_manager.load_rules_config()
 
     # --- Rule Registry -----------------------------------------------------
@@ -172,14 +203,14 @@ def tab_config(data: dict):
         reg_rows.append({
             "Rule": rid, "Tên": meta["name"], "Nhóm": meta["group"],
             "Bật": c.get("enabled", True),
-            "Mức": c.get("severity", meta["severity"]),
+            "Mức": SEV_CODE2LABEL.get(c.get("severity", meta["severity"])),
         })
     reg_df = pd.DataFrame(reg_rows)
     edited = st.data_editor(
         reg_df, hide_index=True, width="stretch", key="reg_editor",
         column_config={
             "Bật": st.column_config.CheckboxColumn(),
-            "Mức": st.column_config.SelectboxColumn(options=["do", "vang", "xanh"]),
+            "Mức": st.column_config.SelectboxColumn(options=list(SEV_LABEL2CODE)),
             "Rule": st.column_config.TextColumn(disabled=True),
             "Tên": st.column_config.TextColumn(disabled=True),
             "Nhóm": st.column_config.TextColumn(disabled=True),
@@ -187,10 +218,11 @@ def tab_config(data: dict):
     if st.button("💾 Lưu Rule Registry"):
         for _, r in edited.iterrows():
             rid = r["Rule"]
+            new_sev = SEV_LABEL2CODE.get(r["Mức"], cfg[rid].get("severity"))
             if cfg[rid].get("enabled") != bool(r["Bật"]):
                 config_manager.toggle_rule(rid, bool(r["Bật"]))
-            if cfg[rid].get("severity") != r["Mức"]:
-                cfg[rid]["severity"] = r["Mức"]
+            if cfg[rid].get("severity") != new_sev:
+                cfg[rid]["severity"] = new_sev
         config_manager.save_rules_config(cfg)
         refresh_all()
         st.success("Đã lưu Rule Registry (ghi audit).")
@@ -202,21 +234,24 @@ def tab_config(data: dict):
     th = cfg[rid].get("thresholds", {})
     st.caption(RULE_REGISTRY[rid]["desc"])
     if not th:
-        st.info("Rule này không có ngưỡng số (dựa trên khung CK / ma trận / chuỗi bước).")
+        st.info("Rule này không có ngưỡng số (dựa trên khung chiết khấu / "
+                "ma trận phân quyền / chuỗi bước kiểm soát).")
     else:
         new_vals = {}
         cols = st.columns(min(3, len(th)))
         for i, (k, v) in enumerate(th.items()):
+            lbl = THRESHOLD_LABELS.get(k, k)
             with cols[i % len(cols)]:
                 if isinstance(v, bool):
-                    new_vals[k] = st.checkbox(k, value=v, key=f"th_{rid}_{k}")
+                    new_vals[k] = st.checkbox(lbl, value=v, key=f"th_{rid}_{k}")
                 elif isinstance(v, (int, float)):
                     step = 0.01 if (isinstance(v, float) and v < 5) else 1.0
-                    new_vals[k] = st.number_input(k, value=float(v), step=step,
+                    new_vals[k] = st.number_input(lbl, value=float(v), step=step,
                                                   key=f"th_{rid}_{k}")
                 else:
-                    st.text_input(k, value=str(v), disabled=True,
+                    st.text_input(lbl, value=str(v), disabled=True,
                                   key=f"th_{rid}_{k}")
+                st.caption(f"`{k}`")
         if st.button("💾 Lưu ngưỡng"):
             for k, v in new_vals.items():
                 if th.get(k) != v:
@@ -248,6 +283,21 @@ def tab_config(data: dict):
             })
         config_manager.save_routing(new_routing)
         st.success("Đã lưu Alert Routing.")
+
+    # --- Alert preview & log (stub dispatcher) ----------------------------
+    st.markdown("**Cảnh báo sẽ gửi (preview theo routing — chế độ stub/log)**")
+    al = alerts.build_alerts(exc_all, config_manager.load_routing())
+    if al.empty:
+        st.caption("Không có cảnh báo cần gửi (đã lọc exception đã đóng).")
+    else:
+        st.dataframe(al, hide_index=True, width="stretch",
+                     column_config={"gia_tri_rui_ro": st.column_config.NumberColumn(
+                         "Giá trị rủi ro", format="%.0f")})
+        if st.button("📨 Gửi cảnh báo (stub → ghi log)"):
+            n = alerts.dispatch(al, user="admin")
+            st.success(f"Đã ghi {n} cảnh báo vào alert log (chưa gửi thật).")
+    with st.expander("Lịch sử alert log"):
+        st.dataframe(alerts.read_alert_log(100), hide_index=True, width="stretch")
 
     # --- User & Role / ma trận phân quyền ---------------------------------
     st.subheader("4) User & Role — Ma trận phân quyền")
@@ -286,12 +336,16 @@ def tab_config(data: dict):
                 audit.log_event("upload", tbl, user="admin")
                 refresh_all()
                 st.success(f"Đã cập nhật bảng {tbl}.")
-        if st.button("🎲 Tạo lại dữ liệu mẫu"):
+        confirm_regen = st.checkbox("Xác nhận ghi đè dữ liệu hiện tại",
+                                    key="confirm_regen")
+        if st.button("🎲 Tạo lại dữ liệu mẫu", disabled=not confirm_regen,
+                     help="Sẽ GHI ĐÈ toàn bộ file trong thư mục data/"):
             subprocess.run([sys.executable,
                             str(ROOT / "scripts" / "generate_seed_data.py")],
                            check=True)
+            audit.log_event("regenerate_seed", "data/", user="admin")
             refresh_all()
-            st.success("Đã tạo lại dữ liệu mẫu.")
+            st.success("Đã tạo lại dữ liệu mẫu (ghi đè data/).")
 
     # --- Audit trail -------------------------------------------------------
     st.subheader("6) Audit trail (thay đổi ngưỡng / trạng thái / cảnh báo)")
@@ -302,35 +356,45 @@ def tab_config(data: dict):
 # TAB 2 — MONITORING
 # ===========================================================================
 def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: dict):
-    st.header("📊 Monitoring — Giám sát RAG cấp cao")
+    page_header("📊 Monitoring — Giám sát rủi ro cấp cao")
 
-    # Scorecard + tổng giá trị rủi ro + delta 30 ngày
+    # Scorecard = TỔNG trong khoảng lọc (không kèm delta để tránh hiểu nhầm).
     summ = rules.summary_by_severity(exc_f)
     today = pd.Timestamp(pd.Timestamp.now().date())
-    d = pd.to_datetime(exc_f["ngay_phat_hien"]) if not exc_f.empty else pd.Series([], dtype="datetime64[ns]")
-    cur = exc_f[d >= today - timedelta(days=30)] if not exc_f.empty else exc_f
-    prev = exc_f[(d >= today - timedelta(days=60)) & (d < today - timedelta(days=30))] \
-        if not exc_f.empty else exc_f
-    prev_summ = rules.summary_by_severity(prev)
-    cur_summ = rules.summary_by_severity(cur)
-    # delta = 30 ngày gần đây vs 30 ngày trước
-    delta_ref = {k: summ[k] - (cur_summ[k] - prev_summ[k]) for k in summ}
+    if not exc_f.empty:
+        d = pd.to_datetime(exc_f["ngay_phat_hien"])
+        cur30 = exc_f[d >= today - timedelta(days=30)]
+        prev30 = exc_f[(d >= today - timedelta(days=60)) & (d < today - timedelta(days=30))]
+    else:
+        cur30 = prev30 = exc_f
+    cur_summ = rules.summary_by_severity(cur30)
+    prev_summ = rules.summary_by_severity(prev30)
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.plotly_chart(charts.scorecard(summ, delta_ref),
-                        width="stretch")
-        st.caption("Số exception theo mức RAG · delta = 30 ngày gần đây so với 30 ngày trước.")
+        st.markdown("**Tổng exception đang mở — theo bộ lọc & khoảng ngày**")
+        st.plotly_chart(charts.scorecard(summ), width="stretch")
+        st.caption("Con số là TỔNG trong khoảng ngày đang lọc (không phải theo tháng).")
     with c2:
         tong = exc_f["gia_tri"].sum() if not exc_f.empty else 0
         st.metric("Tổng giá trị rủi ro", fmt_vnd(tong))
         st.metric("Tổng exception", len(exc_f))
 
+    st.markdown("**Δ 30 ngày gần nhất so với 30 ngày liền trước** "
+                "(theo ngày phát sinh)")
+    dcols = st.columns(3)
+    for col, sev, lbl in zip(dcols, ["do", "vang", "xanh"],
+                             ["🔴 Cao", "🟡 Trung bình", "🟢 Thông tin"]):
+        with col:
+            st.metric(lbl, cur_summ[sev], delta=cur_summ[sev] - prev_summ[sev],
+                      delta_color="inverse")
+
     st.divider()
 
-    # RAG heatmap
+    # Bản đồ nhiệt rủi ro
     st.plotly_chart(charts.rag_heatmap(exc_f, data), width="stretch")
-    st.caption("Hàng = Rule, cột = khu vực; ô đậm = nhiều exception. Dùng bộ lọc bên trái để drill.")
+    st.caption("Hàng = Rule, cột = khu vực; ô đậm = nhiều exception. "
+               "Dùng bộ lọc **phía trên** để xem chi tiết.")
 
     st.divider()
     st.subheader("Biểu đồ theo rule")
@@ -343,6 +407,7 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
         st.plotly_chart(charts.bg_validity_funnel(
             data, int(cfg["R4"]["thresholds"].get("min_days_before_expiry", 7))),
             width="stretch")
+        st.plotly_chart(charts.bg_fulfillment_bar(data), width="stretch")
         st.plotly_chart(charts.channel_stuffing_bar(
             data, cfg["R7"]["thresholds"].get("run_rate_multiplier", 3.0),
             int(cfg["R7"]["thresholds"].get("run_rate_horizon_days", 30))),
@@ -369,7 +434,7 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
 # TAB 3 — EXCEPTIONS
 # ===========================================================================
 def tab_exceptions(data: dict, exc_f: pd.DataFrame):
-    st.header("🚨 Exceptions — Chi tiết cho Kiểm toán")
+    page_header("🚨 Exceptions — Chi tiết cho Kiểm toán")
 
     # bộ lọc nhanh trạng thái
     cstat, cinfo = st.columns([2, 2])
@@ -392,15 +457,18 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
     disp["severity"] = disp["severity"].map(RAG_LABEL)
     disp = disp.rename(columns={
         "ma_exception": "Mã", "rule_id": "Rule", "doi_tuong_type": "Loại",
-        "doi_tuong_id": "Đối tượng", "kh_da": "KH/DA", "gia_tri": "Giá trị",
+        "doi_tuong_id": "Đối tượng", "kh_da": "Khách hàng/Dự án", "gia_tri": "Giá trị",
         "ngay_phat_hien": "Ngày", "severity": "Mức", "status": "Trạng thái",
         "nguoi_xu_ly": "Người xử lý"})
+    st.caption("👉 Bấm chọn một dòng để mở **chi tiết & xử lý** ở dưới. "
+               "Lưu ý: `Mã` (EX-…) đổi sau mỗi lần chạy lại; cột `key` mới là "
+               "định danh ổn định để theo dõi.")
     event = st.dataframe(disp, hide_index=True, width="stretch",
                          on_select="rerun", selection_mode="single-row",
                          column_config={"Giá trị": st.column_config.NumberColumn(
                              format="%.0f")})
 
-    # Export
+    # Export (bao gồm cột key ổn định)
     cex1, cex2, _ = st.columns([1, 1, 4])
     with cex1:
         st.download_button("⬇️ Export CSV", view.to_csv(index=False).encode("utf-8-sig"),
@@ -408,8 +476,7 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
     with cex2:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-            view.drop(columns=["key"], errors="ignore").to_excel(
-                xw, index=False, sheet_name="exceptions")
+            view.to_excel(xw, index=False, sheet_name="exceptions")
         st.download_button("⬇️ Export Excel", buf.getvalue(),
                            "exceptions.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -429,7 +496,7 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
     with cdetail:
         st.markdown(f"**Mức:** {sev_badge(row['severity'])}  ·  "
                     f"**Đối tượng:** {row['doi_tuong_type']} `{row['doi_tuong_id']}`  ·  "
-                    f"**KH/DA:** {row['kh_da']}")
+                    f"**Khách hàng/Dự án:** {row['kh_da']}")
         st.markdown(f"**Giá trị:** {fmt_vnd(row['gia_tri'])}  ·  "
                     f"**Ngày:** {row['ngay_phat_hien']}")
         st.markdown(f"**Lý do trigger:** {row['ly_do']}")
@@ -463,14 +530,13 @@ def _source_records(data: dict, row: pd.Series) -> pd.DataFrame:
     """Truy ngược dữ liệu gốc theo loại đối tượng để hiển thị snapshot."""
     t, oid = row["doi_tuong_type"], row["doi_tuong_id"]
     try:
-        if t == "BG":
+        if t == "Báo giá":
             return data["bao_gia"][data["bao_gia"]["ma_bg"] == oid]
-        if t == "đơn":
-            o = data["order"][data["order"]["ma_don"] == oid]
-            return o
-        if t == "DA":
+        if t == "Đơn hàng":
+            return data["order"][data["order"]["ma_don"] == oid]
+        if t == "Dự án":
             return data["du_an_master"][data["du_an_master"]["ma_da"] == oid]
-        if t == "KH":
+        if t == "Khách hàng":
             return data["cong_no"][data["cong_no"]["ma_kh"] == oid]
     except Exception:
         pass
@@ -495,7 +561,7 @@ def main():
     role, page = sidebar_nav()
 
     if page == "⚙️ Config":
-        tab_config(data)
+        tab_config(data, exc_all)
     elif page == "📊 Monitoring":
         flt = render_filters(data, exc_all)
         exc_f = apply_filters(exc_all, data, flt)

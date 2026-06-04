@@ -80,12 +80,12 @@ CONTROL_STEPS = [
 # ---------------------------------------------------------------------------
 RULE_REGISTRY: dict[str, dict] = {
     "R1": {
-        "name": "Vượt phân quyền / CK & thiếu lưu vết duyệt",
+        "name": "Vượt phân quyền / Chiết khấu & thiếu lưu vết duyệt",
         "group": "Authorization",
         "severity": "do",
         "enabled": True,
-        "desc": "Đề xuất CK > khung CMB HOẶC người duyệt vượt hạn mức; "
-                "duyệt chỉ qua Zalo, không có chứng từ chính thức.",
+        "desc": "Đề xuất chiết khấu vượt khung chiết khấu HOẶC người duyệt "
+                "vượt hạn mức; duyệt chỉ qua Zalo, không có chứng từ chính thức.",
         "thresholds": {"require_official_doc": True},
     },
     "R2": {
@@ -93,7 +93,7 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Pricing leakage",
         "severity": "do",
         "enabled": True,
-        "desc": "value(SKU dân dụng)/value(đơn) vượt ngưỡng cho phép.",
+        "desc": "Giá trị dây dân dụng / giá trị đơn vượt ngưỡng cho phép.",
         "thresholds": {"pct_threshold": 0.30, "size_band_pct": 0.35,
                        "size_band_value": 500_000_000},
     },
@@ -102,7 +102,7 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Credit",
         "severity": "do",
         "enabled": True,
-        "desc": "(dư nợ + đơn)/hạn mức vượt ngưỡng; trả chậm >60d; "
+        "desc": "(dư nợ + đơn)/hạn mức vượt ngưỡng; trả chậm quá 60 ngày; "
                 "trả chậm mà thiếu bảo lãnh/ký quỹ.",
         "thresholds": {"warn_pct": 0.85, "violate_pct": 1.00,
                        "max_tra_cham_days": MAX_TRA_CHAM_DAYS},
@@ -112,8 +112,8 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Quote validity",
         "severity": "do",
         "enabled": True,
-        "desc": "BG hết hạn vẫn phát sinh đơn; đơn đặt <7 ngày trước hết hạn; "
-                "có gia hạn hiệu lực (bị cấm).",
+        "desc": "Báo giá hết hạn vẫn phát sinh đơn; đơn đặt dưới 7 ngày trước "
+                "hết hạn; có gia hạn hiệu lực (bị cấm).",
         "thresholds": {"min_days_before_expiry": ORDER_LEAD_DAYS},
     },
     "R5": {
@@ -121,8 +121,8 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Master data",
         "severity": "do",
         "enabled": True,
-        "desc": "Master thiếu trường bắt buộc; trùng tên/địa chỉ; "
-                "giá trị DA <100tr vẫn nhận giá dự án.",
+        "desc": "Dữ liệu danh mục thiếu trường bắt buộc; trùng tên/địa chỉ; "
+                "giá trị dự án dưới 100 triệu vẫn nhận giá dự án.",
         "thresholds": {"min_da_value": DA_MIN_VALUE},
     },
     "R6": {
@@ -130,8 +130,8 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Process",
         "severity": "vang",
         "enabled": True,
-        "desc": "Bỏ/đảo bước control (gồm thiếu xác nhận cọc, "
-                "thiếu check công nợ trước xuất HĐ).",
+        "desc": "Bỏ/đảo bước kiểm soát (gồm thiếu xác nhận cọc, "
+                "thiếu kiểm tra công nợ trước xuất hóa đơn).",
         "thresholds": {"required_steps": CONTROL_STEPS},
     },
     "R7": {
@@ -139,7 +139,8 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Channel",
         "severity": "vang",
         "enabled": True,
-        "desc": "SL đặt ≫ (tồn + tốc độ bán bình quân); đơn > N× run-rate.",
+        "desc": "Số lượng đặt vượt xa (tồn + tốc độ bán bình quân); "
+                "đơn lớn hơn N lần tốc độ bán bình quân.",
         "thresholds": {"run_rate_multiplier": 3.0, "run_rate_horizon_days": 30},
     },
     "R8": {
@@ -147,7 +148,8 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Market",
         "severity": "xanh",
         "enabled": True,
-        "desc": "Đơn lớn bất thường ngay trước biến động tăng giá đồng (z-score).",
+        "desc": "Đơn lớn bất thường ngay trước biến động tăng giá đồng "
+                "(theo điểm z-score).",
         "thresholds": {"zscore_threshold": 2.0, "window_days": 7,
                        "price_jump_pct": 0.03},
     },
@@ -156,7 +158,7 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Payment",
         "severity": "do",
         "enabled": True,
-        "desc": "Xuất HĐ/giao khi cọc <15% tổng BG "
+        "desc": "Xuất hóa đơn/giao khi cọc dưới 15% tổng báo giá "
                 "(ngoài diện trả chậm có bảo lãnh).",
         "thresholds": {"min_deposit_pct": DEPOSIT_MIN_PCT},
     },
@@ -165,7 +167,7 @@ RULE_REGISTRY: dict[str, dict] = {
         "group": "Pricing",
         "severity": "vang",
         "enabled": True,
-        "desc": "Đơn phát sinh áp khung CK đã hết hiệu lực / không tái duyệt.",
+        "desc": "Đơn phát sinh áp khung chiết khấu đã hết hiệu lực / không tái duyệt.",
         "thresholds": {},
     },
 }

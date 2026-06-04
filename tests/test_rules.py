@@ -70,8 +70,8 @@ def test_r3_has_customer_and_order_level(data):
     th = default_rules_config()["R3"]["thresholds"]
     found = rules.r3(data, th)
     types = {e["doi_tuong_type"] for e in found}
-    assert "KH" in types       # tỷ lệ sử dụng tín dụng theo KH
-    assert "đơn" in types      # trả chậm theo đơn
+    assert "Khách hàng" in types   # tỷ lệ sử dụng tín dụng theo khách hàng
+    assert "Đơn hàng" in types     # trả chậm theo đơn
 
 
 def test_severity_mapping(data):
@@ -87,6 +87,31 @@ def test_summary_by_severity(data):
     summ = rules.summary_by_severity(exc)
     assert set(summ.keys()) == {"do", "vang", "xanh"}
     assert sum(summ.values()) == len(exc)
+
+
+def test_enrich_extracts_ma_kh(data):
+    """Lọc theo KH phải khớp cả khi kh_da dạng 'KH04/DA04' (bug Round 2)."""
+    from src import charts
+    exc = rules.run_all_rules(data)
+    en = charts.enrich_exceptions(exc, data)
+    assert "ma_kh" in en.columns
+    # các dòng R1 có kh_da 'KHxx/DAxx' phải tách được ra 'KHxx'
+    r1 = en[en["rule_id"] == "R1"]
+    assert r1["ma_kh"].str.fullmatch(r"KH\d+").all()
+
+
+def test_bg_fulfillment_chart_builds(data):
+    """Mục tiêu 2: chart 'đã lấy vs còn lại theo báo giá' dựng được (2 trace)."""
+    from src import charts
+    fig = charts.bg_fulfillment_bar(data)
+    assert len(fig.data) == 2
+
+
+def test_r3_customer_util_uses_du_no(data):
+    """R3 cấp khách hàng dùng dư nợ/hạn mức (thang gọn, không cộng dồn lịch sử)."""
+    cn = data["cong_no"]
+    util = (cn["du_no"] / cn["han_muc"]).max()
+    assert util < 2.0, "Tỷ lệ sử dụng tín dụng không được vỡ thang (bug 521x)"
 
 
 def test_exception_key_stable():
