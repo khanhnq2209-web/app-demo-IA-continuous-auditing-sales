@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+logs/
+.streamlit/secrets.toml
+
+# Runtime-generated config (regenerated from defaults on first run)
+config/rules_config.json
+config/alert_routing.json
+.DS_Store
+.pytest_cache/
