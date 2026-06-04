@@ -85,6 +85,19 @@ def fmt_vnd(x) -> str:
         return "-"
 
 
+def fmt_vnd_short(x) -> str:
+    """Rút gọn cho số lớn: 208,5 tỷ ₫ / 12 triệu ₫."""
+    try:
+        x = float(x or 0)
+    except (TypeError, ValueError):
+        return "-"
+    if abs(x) >= 1e9:
+        return f"{x / 1e9:,.1f} tỷ ₫"
+    if abs(x) >= 1e6:
+        return f"{x / 1e6:,.0f} triệu ₫"
+    return f"{x:,.0f} ₫"
+
+
 def sev_badge(sev: str) -> str:
     return RAG_LABEL.get(sev, sev)
 
@@ -340,12 +353,15 @@ def tab_config(data: dict, exc_all: pd.DataFrame):
                                     key="confirm_regen")
         if st.button("🎲 Tạo lại dữ liệu mẫu", disabled=not confirm_regen,
                      help="Sẽ GHI ĐÈ toàn bộ file trong thư mục data/"):
-            subprocess.run([sys.executable,
-                            str(ROOT / "scripts" / "generate_seed_data.py")],
-                           check=True)
-            audit.log_event("regenerate_seed", "data/", user="admin")
-            refresh_all()
-            st.success("Đã tạo lại dữ liệu mẫu (ghi đè data/).")
+            try:
+                subprocess.run([sys.executable,
+                                str(ROOT / "scripts" / "generate_seed_data.py")],
+                               check=True)
+                audit.log_event("regenerate_seed", "data/", user="admin")
+                refresh_all()
+                st.success("Đã tạo lại dữ liệu mẫu (ghi đè data/).")
+            except Exception as exc:
+                st.error(f"Không tạo lại được dữ liệu (môi trường chỉ đọc?): {exc}")
 
     # --- Audit trail -------------------------------------------------------
     st.subheader("6) Audit trail (thay đổi ngưỡng / trạng thái / cảnh báo)")
@@ -377,7 +393,8 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
         st.caption("Con số là TỔNG trong khoảng ngày đang lọc (không phải theo tháng).")
     with c2:
         tong = exc_f["gia_tri"].sum() if not exc_f.empty else 0
-        st.metric("Tổng giá trị rủi ro", fmt_vnd(tong))
+        st.metric("Tổng giá trị rủi ro", fmt_vnd_short(tong),
+                  help=fmt_vnd(tong))
         st.metric("Tổng exception", len(exc_f))
 
     st.markdown("**Δ 30 ngày gần nhất so với 30 ngày liền trước** "
@@ -408,6 +425,9 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
             data, int(cfg["R4"]["thresholds"].get("min_days_before_expiry", 7))),
             width="stretch")
         st.plotly_chart(charts.bg_fulfillment_bar(data), width="stretch")
+        st.plotly_chart(charts.bg_validity_anomaly_bar(
+            data, int(cfg["R4"]["thresholds"].get("max_validity_days", 60))),
+            width="stretch")
         st.plotly_chart(charts.channel_stuffing_bar(
             data, cfg["R7"]["thresholds"].get("run_rate_multiplier", 3.0),
             int(cfg["R7"]["thresholds"].get("run_rate_horizon_days", 30))),
@@ -451,22 +471,22 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
         return
 
     # Bảng exception
-    disp = view[["ma_exception", "rule_id", "doi_tuong_type", "doi_tuong_id",
-                 "kh_da", "gia_tri", "ngay_phat_hien", "severity",
-                 "status", "nguoi_xu_ly"]].copy()
+    disp = view[["ma_exception", "key", "rule_id", "doi_tuong_type",
+                 "doi_tuong_id", "kh_da", "gia_tri", "ngay_phat_hien",
+                 "severity", "status", "nguoi_xu_ly"]].copy()
     disp["severity"] = disp["severity"].map(RAG_LABEL)
+    disp["gia_tri"] = disp["gia_tri"].map(fmt_vnd)
     disp = disp.rename(columns={
-        "ma_exception": "Mã", "rule_id": "Rule", "doi_tuong_type": "Loại",
-        "doi_tuong_id": "Đối tượng", "kh_da": "Khách hàng/Dự án", "gia_tri": "Giá trị",
+        "ma_exception": "Mã", "key": "Key", "rule_id": "Rule",
+        "doi_tuong_type": "Loại", "doi_tuong_id": "Đối tượng",
+        "kh_da": "Khách hàng/Dự án", "gia_tri": "Giá trị",
         "ngay_phat_hien": "Ngày", "severity": "Mức", "status": "Trạng thái",
         "nguoi_xu_ly": "Người xử lý"})
     st.caption("👉 Bấm chọn một dòng để mở **chi tiết & xử lý** ở dưới. "
-               "Lưu ý: `Mã` (EX-…) đổi sau mỗi lần chạy lại; cột `key` mới là "
+               "Lưu ý: `Mã` (EX-…) đổi sau mỗi lần chạy lại; cột **Key** là "
                "định danh ổn định để theo dõi.")
     event = st.dataframe(disp, hide_index=True, width="stretch",
-                         on_select="rerun", selection_mode="single-row",
-                         column_config={"Giá trị": st.column_config.NumberColumn(
-                             format="%.0f")})
+                         on_select="rerun", selection_mode="single-row")
 
     # Export (bao gồm cột key ổn định)
     cex1, cex2, _ = st.columns([1, 1, 4])
@@ -557,6 +577,11 @@ def main():
     cfg = config_manager.load_rules_config()
     exc_raw = get_exceptions(json.dumps(cfg, sort_keys=True), token)
     exc_all = store.apply_status(exc_raw)
+    try:                                        # minh hoạ workflow lần đầu chạy
+        if store.seed_demo_if_empty(exc_all):
+            exc_all = store.apply_status(exc_raw)
+    except Exception:                           # FS chỉ đọc trên cloud → bỏ qua
+        pass
 
     role, page = sidebar_nav()
 

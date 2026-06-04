@@ -163,6 +163,7 @@ def generate() -> dict[str, pd.DataFrame]:
         gia_han = "N"
         bg_rows.append({
             "ma_bg": ma_bg, "ngay_tao": ngay_tao, "ngay_het_hieu_luc": het_hl,
+            "ngay_het_hieu_luc_goc": het_hl,   # hạn gốc = ngày tạo + 60 (chưa gia hạn)
             "ma_kh": da_owner.get(proj["ma_da"], "KH01"), "ma_da": proj["ma_da"],
             "nguoi_duyet": rng.choice(["Lê Trưởng KD", "Phạm GĐ", "Hoàng TGĐ"]),
             "vai_tro_nguoi_duyet": role, "kenh_duyet": kenh, "co_chung_tu": co_ct,
@@ -177,9 +178,18 @@ def generate() -> dict[str, pd.DataFrame]:
     bg_rows[15]["gia_tri"] = 1_500_000_000; bg_rows[15]["vai_tro_nguoi_duyet"] = "NV KD"  # vượt hạn mức giá trị
     bg_rows[20]["kenh_duyet"] = "Zalo"; bg_rows[20]["co_chung_tu"] = "N"
 
-    # R4 injections — gia hạn hiệu lực (bị cấm)
-    bg_rows[9]["gia_han"] = "Y"
-    bg_rows[18]["gia_han"] = "Y"
+    # R4 injections — gia hạn hiệu lực (lưu hạn gốc + số ngày gia hạn)
+    for idx, ext in [(9, 25), (18, 40)]:
+        bg_rows[idx]["gia_han"] = "Y"
+        goc = bg_rows[idx]["ngay_het_hieu_luc_goc"]
+        bg_rows[idx]["ngay_het_hieu_luc"] = goc + timedelta(days=ext)
+
+    # R4 injections — hiệu lực dài bất thường ngay từ đầu (>60 ngày, không gia hạn)
+    for idx in (25, 27):
+        tao = bg_rows[idx]["ngay_tao"]
+        long_het = tao + timedelta(days=85)
+        bg_rows[idx]["ngay_het_hieu_luc"] = long_het
+        bg_rows[idx]["ngay_het_hieu_luc_goc"] = long_het
 
     # R10 injections — BG dùng khung CK đã hết hiệu lực
     bg_rows[5]["ma_khung"] = "CK-DA-Q1"
@@ -353,6 +363,7 @@ def generate() -> dict[str, pd.DataFrame]:
         df_khung[col] = df_khung[col].map(_d)
     df_bg["ngay_tao"] = df_bg["ngay_tao"].map(_d)
     df_bg["ngay_het_hieu_luc"] = df_bg["ngay_het_hieu_luc"].map(_d)
+    df_bg["ngay_het_hieu_luc_goc"] = df_bg["ngay_het_hieu_luc_goc"].map(_d)
     df_order["ngay_dat"] = df_order["ngay_dat"].map(_d)
 
     return {

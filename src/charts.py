@@ -52,15 +52,22 @@ def enrich_exceptions(exc: pd.DataFrame, data: dict) -> pd.DataFrame:
     o = data["order"]
     en = exc.copy()
     en["ma_kh"] = en["kh_da"].astype(str).str.extract(r"(KH\d+)")[0]
-    da_owner = dict(zip(data["du_an_master"]["ma_da"].astype(str),
-                        data["du_an_master"]["chu_dau_tu"].astype(str)))
+
+    def _s(v):
+        """Trả về str sạch hoặc None (chống NaN/float làm vỡ .startswith)."""
+        return v if isinstance(v, str) and v and v.lower() != "nan" else None
+
+    da = data["du_an_master"]
+    da_owner = {str(k): _s(v) for k, v in zip(da["ma_da"], da["chu_dau_tu"])}
 
     def kh_of(row):
-        if isinstance(row["ma_kh"], str) and row["ma_kh"]:
-            return row["ma_kh"]
+        mk = _s(row["ma_kh"])
+        if mk:
+            return mk
         oid = str(row["doi_tuong_id"])
-        if oid in da_owner and da_owner[oid].startswith("KH"):
-            return da_owner[oid]
+        owner = da_owner.get(oid)
+        if owner and owner.startswith("KH"):
+            return owner
         return oid if oid.startswith("KH") else None
 
     en["ma_kh"] = en.apply(kh_of, axis=1)
@@ -72,9 +79,10 @@ def enrich_exceptions(exc: pd.DataFrame, data: dict) -> pd.DataFrame:
     kh_nv, kh_kv = dict(zip(kh["ma_kh"], kh["nhan_vien_kd"])), dict(zip(kh["ma_kh"], kh["khu_vuc"]))
 
     def resolve(row, omap, bmap, kmap):
-        oid = row["doi_tuong_id"]
+        oid = str(row["doi_tuong_id"])
+        mk = row["ma_kh"]
         return (omap.get(oid) or bmap.get(oid)
-                or (kmap.get(row["ma_kh"]) if row["ma_kh"] else None)
+                or (kmap.get(mk) if isinstance(mk, str) else None)
                 or "(không xác định)")
 
     en["nhan_vien_kd"] = en.apply(lambda r: resolve(r, ord_nv, bg_nv, kh_nv), axis=1)
@@ -170,10 +178,13 @@ def dan_dung_hist(data: dict, threshold: float = 0.30) -> go.Figure:
     lines = data["order_line"]
     if lines.empty:
         return _empty()
-    g = lines.groupby("ma_don").apply(
-        lambda d: d.loc[d["phan_loai"] == "dan_dung", "gia_tri"].sum()
-        / max(d["gia_tri"].sum(), 1), include_groups=False)
-    ratios = g.values
+    # Tính theo vector (không dùng groupby.apply/include_groups — tránh lệ thuộc
+    # phiên bản pandas khi deploy)
+    total = lines.groupby("ma_don")["gia_tri"].sum()
+    dan_dung = (lines[lines["phan_loai"] == "dan_dung"]
+                .groupby("ma_don")["gia_tri"].sum())
+    ratios = (dan_dung.reindex(total.index).fillna(0)
+              / total.replace(0, 1)).values
     fig = px.histogram(x=ratios, nbins=20, template=TEMPLATE,
                        color_discrete_sequence=[RAG_COLORS["xanh"]])
     fig.add_vline(x=threshold, line_dash="dash", line_color=RAG_COLORS["do"],
@@ -252,6 +263,41 @@ def bg_fulfillment_bar(data: dict, near_days: int = 45, top_n: int = 15) -> go.F
         title=f"R4 — Báo giá sắp hết hiệu lực (≤{near_days} ngày): đã lấy vs còn lại",
         xaxis_title="Giá trị (VND)", yaxis_title="Báo giá",
         legend=dict(orientation="h", y=1.08))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# R4 — Báo giá hiệu lực dài bất thường / số ngày gia hạn
+# ---------------------------------------------------------------------------
+def bg_validity_anomaly_bar(data: dict, max_validity: int = 60,
+                            top_n: int = 15) -> go.Figure:
+    bg = data["bao_gia"].copy()
+    if bg.empty:
+        return _empty()
+    bg["tao"] = pd.to_datetime(bg["ngay_tao"])
+    bg["het"] = pd.to_datetime(bg["ngay_het_hieu_luc"])
+    bg["goc"] = pd.to_datetime(bg["ngay_het_hieu_luc_goc"]) \
+        if "ngay_het_hieu_luc_goc" in bg.columns else bg["het"]
+    bg["so_ngay_hieu_luc"] = (bg["het"] - bg["tao"]).dt.days
+    bg["so_ngay_gia_han"] = (bg["het"] - bg["goc"]).dt.days.clip(lower=0)
+    flagged = bg[(bg["so_ngay_hieu_luc"] > max_validity)
+                 | (bg["so_ngay_gia_han"] > 0)].copy()
+    if flagged.empty:
+        return _empty("Không có báo giá hiệu lực dài/gia hạn bất thường")
+    flagged = flagged.sort_values("so_ngay_hieu_luc").tail(top_n)
+    colors = [RAG_COLORS["do"] if d > max_validity else RAG_COLORS["vang"]
+              for d in flagged["so_ngay_hieu_luc"]]
+    fig = go.Figure(go.Bar(
+        x=flagged["so_ngay_hieu_luc"], y=flagged["ma_bg"], orientation="h",
+        marker_color=colors, customdata=flagged["so_ngay_gia_han"],
+        hovertemplate="%{y}<br>Hiệu lực: %{x} ngày"
+                      "<br>Trong đó gia hạn: %{customdata} ngày<extra></extra>"))
+    fig.add_vline(x=max_validity, line_dash="dash", line_color=RAG_COLORS["do"],
+                  annotation_text=f"Chuẩn {max_validity} ngày")
+    fig.update_layout(template=TEMPLATE, height=320,
+                      title="R4 — Báo giá hiệu lực dài / gia hạn bất thường",
+                      xaxis_title="Số ngày hiệu lực (tạo → hết hạn)",
+                      yaxis_title="Báo giá")
     return fig
 
 

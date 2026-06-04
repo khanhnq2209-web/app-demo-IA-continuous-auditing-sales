@@ -80,3 +80,24 @@ def update_status(key: str, status: str, user: str = "ktnb",
 
 def get_history(key: str) -> list:
     return _load().get(key, {}).get("history", [])
+
+
+def seed_demo_if_empty(exc: pd.DataFrame) -> bool:
+    """Lần đầu chạy: gán sẵn vài exception trạng thái ≠ Open để minh hoạ workflow.
+
+    Trả True nếu vừa seed (để caller re-apply trạng thái).
+    """
+    if STATUS_FILE.exists() or exc is None or exc.empty or "key" not in exc.columns:
+        return False
+    plan = [("R1", "Đang rà soát", "Nguyễn Văn A"),
+            ("R9", "Xác nhận vi phạm", "Trần Thị B"),
+            ("R3", "Đã giải trình", "Lê Văn C")]
+    seeded = False
+    for rid, status, who in plan:
+        sub = exc[exc["rule_id"] == rid]
+        if sub.empty:
+            continue
+        update_status(sub.iloc[0]["key"], status, user="seed",
+                      note="(dữ liệu demo)", nguoi_xu_ly=who)
+        seeded = True
+    return seeded

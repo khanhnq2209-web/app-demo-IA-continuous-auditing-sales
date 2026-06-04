@@ -30,9 +30,9 @@ ENTITIES: dict[str, list[str]] = {
         "ngay_hieu_luc_tu", "ngay_hieu_luc_den",
     ],
     "bao_gia": [
-        "ma_bg", "ngay_tao", "ngay_het_hieu_luc", "ma_kh", "ma_da",
-        "nguoi_duyet", "vai_tro_nguoi_duyet", "kenh_duyet", "co_chung_tu",
-        "gia_tri", "pct_ck", "ma_khung", "gia_han",
+        "ma_bg", "ngay_tao", "ngay_het_hieu_luc", "ngay_het_hieu_luc_goc",
+        "ma_kh", "ma_da", "nguoi_duyet", "vai_tro_nguoi_duyet", "kenh_duyet",
+        "co_chung_tu", "gia_tri", "pct_ck", "ma_khung", "gia_han",
     ],
     "order": [
         "ma_don", "ma_bg", "ngay_dat", "ma_kh", "ma_dai_ly", "khu_vuc",
@@ -113,8 +113,9 @@ RULE_REGISTRY: dict[str, dict] = {
         "severity": "do",
         "enabled": True,
         "desc": "Báo giá hết hạn vẫn phát sinh đơn; đơn đặt dưới 7 ngày trước "
-                "hết hạn; có gia hạn hiệu lực (bị cấm).",
-        "thresholds": {"min_days_before_expiry": ORDER_LEAD_DAYS},
+                "hết hạn; hiệu lực dài bất thường (>60 ngày) hoặc có gia hạn.",
+        "thresholds": {"min_days_before_expiry": ORDER_LEAD_DAYS,
+                       "max_validity_days": BG_VALIDITY_DAYS},
     },
     "R5": {
         "name": "Dự án ma / dưới ngưỡng",

@@ -12,7 +12,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 # Cột kiểu ngày cần parse cho từng bảng
 DATE_COLUMNS = {
     "khung_ck": ["ngay_ban_hanh", "ngay_hieu_luc_tu", "ngay_hieu_luc_den"],
-    "bao_gia": ["ngay_tao", "ngay_het_hieu_luc"],
+    "bao_gia": ["ngay_tao", "ngay_het_hieu_luc", "ngay_het_hieu_luc_goc"],
     "order": ["ngay_dat"],
     "coc": ["ngay"],
     "gia_dong": ["ngay"],

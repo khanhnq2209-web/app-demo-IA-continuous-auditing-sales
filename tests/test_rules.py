@@ -114,6 +114,37 @@ def test_r3_customer_util_uses_du_no(data):
     assert util < 2.0, "Tỷ lệ sử dụng tín dụng không được vỡ thang (bug 521x)"
 
 
+def test_r4_bg_level_validity_and_extension(data):
+    """R4 cấp Báo giá: bắt hiệu lực dài bất thường + số ngày gia hạn."""
+    found = rules.r4(data, default_rules_config()["R4"]["thresholds"])
+    bg_level = [e for e in found if e["doi_tuong_type"] == "Báo giá"]
+    assert any("Hiệu lực báo giá" in e["ly_do"] for e in bg_level)
+    assert any("Gia hạn +" in e["ly_do"] for e in bg_level)
+
+
+def test_r3_delivery_despite_breach(data):
+    """R3: bắt ca đã giao hàng dù khách hàng vượt hạn mức tín dụng."""
+    found = rules.r3(data, default_rules_config()["R3"]["thresholds"])
+    assert any("Đã giao hàng dù" in e["ly_do"] for e in found)
+
+
+def test_enrich_nan_owner_safe():
+    """Bug Streamlit Cloud: chủ đầu tư dự án NaN không được làm vỡ enrich."""
+    import numpy as np
+    import pandas as pd
+    from src import charts
+    fake = {
+        "order": pd.DataFrame({"ma_don": ["DH1"], "ma_bg": ["BG1"],
+                               "ma_kh": ["KH1"], "nhan_vien_kd": ["A"],
+                               "khu_vuc": ["Bắc"]}),
+        "du_an_master": pd.DataFrame({"ma_da": ["DA1"], "chu_dau_tu": [np.nan]}),
+    }
+    exc = pd.DataFrame({"rule_id": ["R5"], "doi_tuong_id": ["DA1"],
+                        "kh_da": ["DA1"], "severity": ["do"], "ly_do": ["x"]})
+    out = charts.enrich_exceptions(exc, fake)   # không được raise
+    assert "ma_kh" in out.columns and "khu_vuc" in out.columns
+
+
 def test_exception_key_stable():
     k1 = store.exception_key("R1", "BG0001", "lý do A")
     k2 = store.exception_key("R1", "BG0001", "lý do A")

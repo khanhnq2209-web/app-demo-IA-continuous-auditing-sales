@@ -140,6 +140,22 @@ def r3(data, th) -> list[dict]:
         if reasons:
             out.append(_exc("R3", "Đơn hàng", o["ma_don"], kh, o["gia_tri"],
                             " · ".join(reasons), o.get("ngay_dat")))
+
+    # (3) Vượt hạn mức tín dụng NHƯNG VẪN GIAO HÀNG (ca nghiêm trọng)
+    ev = data.get("event_log")
+    delivered = set()
+    if ev is not None and not ev.empty:
+        delivered = set(ev.loc[ev["buoc"] == "giao_hang", "ma_don"])
+    util_by_kh = {c["ma_kh"]: (c["du_no"] / c["han_muc"] if c["han_muc"] else 0)
+                  for _, c in cn.iterrows()}
+    for _, o in orders.iterrows():
+        if o["ma_don"] not in delivered:
+            continue
+        util = util_by_kh.get(o["ma_kh"], 0)
+        if util > violate:
+            out.append(_exc("R3", "Đơn hàng", o["ma_don"], o["ma_kh"], o["gia_tri"],
+                            f"Đã giao hàng dù khách hàng vượt hạn mức tín dụng "
+                            f"({util:.0%} > 100%)", o.get("ngay_dat")))
     return out
 
 
@@ -148,14 +164,39 @@ def r3(data, th) -> list[dict]:
 # ---------------------------------------------------------------------------
 def r4(data, th) -> list[dict]:
     orders = data["order"]
-    bg = data["bao_gia"].set_index("ma_bg")
+    bg = data["bao_gia"]
+    bg_idx = bg.set_index("ma_bg")
     lead = th.get("min_days_before_expiry", 7)
+    max_validity = th.get("max_validity_days", 60)
     out = []
+
+    # (A) Cấp Báo giá — hiệu lực dài bất thường / gia hạn (số ngày)
+    for _, b in bg.iterrows():
+        tao, het = b.get("ngay_tao"), b.get("ngay_het_hieu_luc")
+        goc = b.get("ngay_het_hieu_luc_goc", het)
+        reasons = []
+        if pd.notna(tao) and pd.notna(het):
+            duration = (het - tao).days
+            if duration > max_validity:
+                reasons.append(f"Hiệu lực báo giá {duration} ngày > {max_validity} "
+                               f"ngày (bất thường)")
+        if str(b.get("gia_han")) == "Y" and pd.notna(goc) and pd.notna(het):
+            ext = (het - goc).days
+            if ext > 0:
+                reasons.append(f"Gia hạn +{ext} ngày so với hạn gốc "
+                               f"{pd.to_datetime(goc).date()} (bị cấm)")
+            else:
+                reasons.append("Báo giá có gia hạn hiệu lực (bị cấm)")
+        if reasons:
+            out.append(_exc("R4", "Báo giá", b["ma_bg"],
+                            f"{b['ma_kh']}/{b['ma_da']}", b["gia_tri"],
+                            " · ".join(reasons), b.get("ngay_tao")))
+
+    # (B) Cấp Đơn hàng — thời điểm đặt đơn so với hạn hiệu lực
     for _, o in orders.iterrows():
-        if o["ma_bg"] not in bg.index:
+        if o["ma_bg"] not in bg_idx.index:
             continue
-        het = bg.loc[o["ma_bg"], "ngay_het_hieu_luc"]
-        gia_han = str(bg.loc[o["ma_bg"], "gia_han"])
+        het = bg_idx.loc[o["ma_bg"], "ngay_het_hieu_luc"]
         ngay_dat = o["ngay_dat"]
         reasons = []
         if pd.notna(het) and pd.notna(ngay_dat):
@@ -164,8 +205,6 @@ def r4(data, th) -> list[dict]:
                 reasons.append(f"Báo giá đã hết hạn {abs(days_left)} ngày vẫn phát sinh đơn")
             elif days_left < lead:
                 reasons.append(f"Đặt đơn chỉ còn {days_left} ngày trước hết hạn (dưới {lead} ngày)")
-        if gia_han == "Y":
-            reasons.append("Báo giá có gia hạn hiệu lực (bị cấm)")
         if reasons:
             out.append(_exc("R4", "Đơn hàng", o["ma_don"], o["ma_kh"], o["gia_tri"],
                             " · ".join(reasons), ngay_dat))
