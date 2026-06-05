@@ -118,6 +118,42 @@ def metric_card(label: str, value, sub: str = "", color: str = "#1A1A1A",
         f'{value}</div>{sub_html}</div>')
 
 
+def _compact(fig, h: int = 300):
+    """Giảm chiều cao chart khi đặt trong expander."""
+    try:
+        fig.update_layout(height=h)
+    except Exception:
+        pass
+    return fig
+
+
+def _violator_drill(ev, exc_f: pd.DataFrame, data: dict, col: str, label: str):
+    """Bấm vào bar Top vi phạm → liệt kê các vi phạm của đối tượng đó."""
+    try:
+        pts = ev["selection"]["points"]
+    except (KeyError, TypeError):
+        pts = []
+    if not pts:
+        st.caption(f"↑ Bấm vào một cột để xem danh sách vi phạm của {label}.")
+        return
+    val = pts[0].get("y")
+    if not val:
+        return
+    en = charts.enrich_exceptions(exc_f, data)
+    sub = en[en[col] == val]
+    st.markdown(f"**Vi phạm của {label} `{val}`:** {len(sub)} exception")
+    if not sub.empty:
+        show = sub[["ma_exception", "rule_id", "doi_tuong_type", "doi_tuong_id",
+                    "kh_da", "gia_tri", "severity", "status"]].copy()
+        show["gia_tri"] = show["gia_tri"].map(fmt_vnd)
+        show["severity"] = show["severity"].map(RAG_LABEL)
+        st.dataframe(show.rename(columns={
+            "ma_exception": "Mã", "rule_id": "Rule", "doi_tuong_type": "Loại",
+            "doi_tuong_id": "Đối tượng", "kh_da": "KH/DA", "gia_tri": "Giá trị",
+            "severity": "Mức", "status": "Trạng thái"}),
+            hide_index=True, width="stretch")
+
+
 def pillar_card(icon: str, title: str, subtitle: str, stat: str, bg: str) -> str:
     """Banner một 'trụ' (Continuous Monitoring / Reporting) — nền màu, chữ trắng."""
     return (
@@ -157,8 +193,8 @@ def sidebar_nav() -> tuple[str, str]:
         st.rerun()
 
     st.sidebar.divider()
-    pages = (["⚙️ Config", "📊 Monitoring", "🚨 Exceptions"]
-             if role.startswith("Kiểm toán") else ["📊 Monitoring"])
+    pages = (["📖 Hướng dẫn", "⚙️ Config", "📊 Monitoring", "🚨 Exceptions"]
+             if role.startswith("Kiểm toán") else ["📖 Hướng dẫn", "📊 Monitoring"])
     default_page = "📊 Monitoring"        # mặc định mở Monitoring trước
     if st.session_state.get("nav_page") not in pages:
         st.session_state["nav_page"] = (default_page if default_page in pages
@@ -173,7 +209,10 @@ def sidebar_nav() -> tuple[str, str]:
 def render_filters(data: dict, exc: pd.DataFrame) -> dict:
     """Bộ lọc đặt TRONG trang (không ở sidebar) — dùng chung Monitoring & Exceptions."""
     flt = {}
-    with st.expander("🔎 Bộ lọc", expanded=True):
+    active = any(st.session_state.get(k) for k in
+                 ("flt_nv", "flt_kv", "flt_kh", "flt_rule", "flt_sev"))
+    with st.expander("🔎 Bộ lọc" + (" · đang lọc" if active else ""),
+                     expanded=active):
         c1, c2, c3 = st.columns(3)
         with c1:
             if not exc.empty:
@@ -400,22 +439,82 @@ def tab_config(data: dict, exc_all: pd.DataFrame):
     st.dataframe(audit.read_audit(200), hide_index=True, width="stretch")
 
 
+def monitor_summary(data: dict, exc_f: pd.DataFrame):
+    """⚡ Ticker cảnh báo mới nhất + 📋 tóm tắt nhanh (top rule/khu vực) + tuổi exception."""
+    st.divider()
+    st.markdown("**⚡ Cảnh báo mới nhất**")
+    if exc_f is None or exc_f.empty:
+        st.caption("Không có exception trong phạm vi lọc.")
+        return
+    latest = exc_f.sort_values("ngay_phat_hien", ascending=False).head(5)
+    items = ""
+    for _, r in latest.iterrows():
+        c = RAG_CARD.get(r["severity"], ("#666", "#eee"))[0]
+        items += (
+            '<div style="padding:7px 12px;border-bottom:1px solid #eef0f2;font-size:13.5px;">'
+            f'<span style="color:{c};font-weight:700;">●</span> '
+            f'<b>{r["rule_id"]}</b> · {r["doi_tuong_type"]} {r["doi_tuong_id"]} · '
+            f'{r["kh_da"]} · {fmt_vnd(r["gia_tri"])}'
+            f'<span style="color:#9ca3af;"> · {r["ngay_phat_hien"]}</span></div>')
+    st.markdown('<div style="border:1px solid #E2E5E9;border-radius:10px;'
+                f'background:#fff;overflow:hidden;">{items}</div>',
+                unsafe_allow_html=True)
+
+    st.markdown("**📋 Tóm tắt nhanh (cho Ban lãnh đạo)**")
+    en = charts.enrich_exceptions(exc_f, data)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.caption("Top rule nhiều exception")
+        tr = (exc_f.groupby("rule_id").size().sort_values(ascending=False)
+              .head(3).reset_index(name="Số EX"))
+        tr["Mức"] = tr["rule_id"].map(lambda r: RAG_LABEL[RULE_REGISTRY[r]["severity"]])
+        tr["Tên"] = tr["rule_id"].map(lambda r: RULE_REGISTRY[r]["name"])
+        st.dataframe(tr.rename(columns={"rule_id": "Rule"})[["Rule", "Mức", "Tên", "Số EX"]],
+                     hide_index=True, width="stretch")
+    with c2:
+        st.caption("Top khu vực rủi ro")
+        tk = (en.groupby("khu_vuc").size().sort_values(ascending=False).head(3)
+              .reset_index(name="Số EX").rename(columns={"khu_vuc": "Khu vực"}))
+        st.dataframe(tk, hide_index=True, width="stretch")
+    with c3:
+        st.caption("Tuổi exception đang mở (theo ngày phát sinh)")
+        today = pd.Timestamp(pd.Timestamp.now().date())
+        op = exc_f[~exc_f["status"].isin(["Đã giải trình", "Đóng"])]
+        if not op.empty:
+            age = (today - pd.to_datetime(op["ngay_phat_hien"])).dt.days
+            n7, n30 = int((age > 7).sum()), int((age > 30).sum())
+        else:
+            n7 = n30 = 0
+        a1, a2 = st.columns(2)
+        c7 = ("#E03C32", "#FDECEA") if n7 else ("#5A8F3C", "#EEF6E9")
+        c30 = ("#E03C32", "#FDECEA") if n30 else ("#5A8F3C", "#EEF6E9")
+        a1.markdown(metric_card("Open > 7 ngày", n7, color=c7[0], border=c7[0], bg=c7[1]),
+                    unsafe_allow_html=True)
+        a2.markdown(metric_card("Open > 30 ngày", n30, color=c30[0], border=c30[0], bg=c30[1]),
+                    unsafe_allow_html=True)
+
+
 # ===========================================================================
 # TAB 2 — MONITORING
 # ===========================================================================
-def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: dict):
+def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame,
+                   cfg: dict, role: str = "Kiểm toán nội bộ / Quản trị"):
     page_header("📊 Monitoring — Giám sát rủi ro cấp cao")
 
     # --- 2 trụ Kiểm soát tự động (theo slide đề xuất) ---------------------
     n_txn = len(data["order"]) + len(data["bao_gia"])
     n_rule_on = sum(1 for r in ALL_RULE_IDS if cfg.get(r, {}).get("enabled", True))
+    valid_ids = set(data["order"]["ma_don"]) | set(data["bao_gia"]["ma_bg"])
+    flagged = set(exc_all.loc[exc_all["doi_tuong_type"].isin(["Đơn hàng", "Báo giá"]),
+                              "doi_tuong_id"]) if not exc_all.empty else set()
+    pass_pct = (n_txn - len(flagged & valid_ids)) / n_txn if n_txn else 0
     st.caption("**Kiểm soát tự động:** giám sát liên tục toàn bộ giao dịch theo "
                "rule, phát hiện bất thường và cảnh báo để hỗ trợ ra quyết định.")
     p1, p2 = st.columns(2)
     p1.markdown(pillar_card(
         "🔍", "Continuous Monitoring", "Giám sát 100% giao dịch theo rule tự động",
-        f"Đã quét {n_txn:,} giao dịch · {n_rule_on}/{len(ALL_RULE_IDS)} rule đang bật",
-        "#1C6EA4"), unsafe_allow_html=True)
+        f"Đã quét {n_txn:,} giao dịch · {pass_pct:.0%} đạt · "
+        f"{n_rule_on}/{len(ALL_RULE_IDS)} rule bật", "#1C6EA4"), unsafe_allow_html=True)
     p2.markdown(pillar_card(
         "✅", "Continuous Reporting", "Dashboard thời gian thực cho Ban lãnh đạo",
         f"{len(exc_all)} exception phát hiện · cập nhật {data_token_human()}",
@@ -437,77 +536,132 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
     labels = {"do": "🔴 Cao", "vang": "🟡 Trung bình", "xanh": "🟢 Thông tin"}
     tong = exc_f["gia_tri"].sum() if not exc_f.empty else 0
 
-    st.markdown("**Tổng exception đang mở — theo bộ lọc & khoảng ngày**")
+    # --- KPI gộp 1 hàng: 3 RAG (kèm Δ30 ngày) | Tổng EX | Giá trị rủi ro ----
+    def _delta_sub(sev):
+        diff = cur_summ[sev] - prev_summ[sev]
+        if diff > 0:
+            d = f'<span style="color:#E03C32;font-weight:600;">▲ +{diff}</span>'
+        elif diff < 0:
+            d = f'<span style="color:#7BB662;font-weight:600;">▼ {diff}</span>'
+        else:
+            d = "— 0"
+        return f'<span style="color:#9ca3af">Δ30 ngày:</span> {d}'
+
     cols = st.columns(5)
     for col, sev in zip(cols[:3], ["do", "vang", "xanh"]):
         color, bg = RAG_CARD[sev]
-        col.markdown(metric_card(labels[sev], summ[sev], color=color,
-                                 border=color, bg=bg), unsafe_allow_html=True)
-    cols[3].markdown(metric_card("Tổng giá trị rủi ro", fmt_vnd_short(tong),
+        col.markdown(metric_card(labels[sev], summ[sev], sub=_delta_sub(sev),
+                                 color=color, border=color, bg=bg),
+                     unsafe_allow_html=True)
+    cols[3].markdown(metric_card("Tổng exception", f"{len(exc_f)}"),
+                     unsafe_allow_html=True)
+    cols[4].markdown(metric_card("Tổng giá trị rủi ro", fmt_vnd_short(tong),
                                  sub=f'<span style="color:#6b7280">{fmt_vnd(tong)}</span>'),
                      unsafe_allow_html=True)
-    cols[4].markdown(metric_card("Tổng exception", f"{len(exc_f)}"),
-                     unsafe_allow_html=True)
-    st.caption("**Tổng giá trị rủi ro** = tổng giá trị đối tượng (đơn / báo giá / "
-               "dư nợ) của các exception đang hiển thị · con số là **TỔNG** trong "
-               "khoảng ngày đang lọc, không phải theo tháng.")
+    st.caption("Số lớn = **TỔNG** exception đang mở trong khoảng lọc · Δ30 ngày = "
+               "30 ngày gần nhất so với 30 ngày liền trước (theo ngày phát sinh) · "
+               "Giá trị rủi ro = tổng giá trị đối tượng các exception hiển thị.")
 
-    st.markdown("**Δ 30 ngày gần nhất so với 30 ngày liền trước** "
-                "(theo ngày phát sinh)")
-    dcols = st.columns(5)
-    for col, sev in zip(dcols[:3], ["do", "vang", "xanh"]):
-        diff = cur_summ[sev] - prev_summ[sev]
-        if diff > 0:
-            sub = f'<span style="color:#E03C32;font-weight:600;">▲ +{diff}</span> so với kỳ trước'
-        elif diff < 0:
-            sub = f'<span style="color:#7BB662;font-weight:600;">▼ {diff}</span> so với kỳ trước'
-        else:
-            sub = '<span style="color:#9ca3af;">— không đổi</span>'
-        col.markdown(metric_card(labels[sev], cur_summ[sev], sub=sub),
-                     unsafe_allow_html=True)
-
-    st.divider()
-
-    # Bản đồ nhiệt rủi ro
-    st.plotly_chart(charts.rag_heatmap(exc_f, data), width="stretch")
+    # --- HEATMAP (xương sống) — ngay sau KPI -----------------------------
+    hm = st.plotly_chart(charts.rag_heatmap(exc_f, data), width="stretch",
+                         on_select="rerun", key="hm_sel")
     st.caption("Hàng = Rule, cột = khu vực; ô đậm = nhiều exception. "
-               "Dùng bộ lọc **phía trên** để xem chi tiết.")
+               "**Bấm vào một ô** để drill-down · bộ lọc ở đầu trang.")
+    try:
+        sel_pts = hm["selection"]["points"]
+    except (KeyError, TypeError):
+        sel_pts = []
+    if sel_pts:
+        sel_rule = sel_pts[0].get("y")
+        sel_kv = sel_pts[0].get("x")
+        if sel_rule and sel_kv:
+            en = charts.enrich_exceptions(exc_f, data)
+            cnt = int(((en["rule_id"] == sel_rule) & (en["khu_vuc"] == sel_kv)).sum())
+            da, db = st.columns([3, 1])
+            da.markdown(f"🔎 Đang chọn **Rule {sel_rule} × Khu vực {sel_kv}** → "
+                        f"**{cnt}** exception")
+            if db.button("➡️ Mở ở Exceptions", width="stretch"):
+                st.session_state["_drill"] = {"rule": sel_rule, "kv": sel_kv}
+                st.rerun()
+
+    # --- Tóm tắt nhanh (ticker + top) — đặt DƯỚI heatmap -----------------
+    monitor_summary(data, exc_f)
+
+    # --- Nhóm chart chi tiết — chỉ Kiểm toán nội bộ ----------------------
+    is_ktnb = role.startswith("Kiểm toán")
+    if not is_ktnb:
+        st.caption("ℹ️ Phân tích chi tiết theo nhóm dành cho Kiểm toán nội bộ "
+                   "(chọn vai trò KTNB ở sidebar để xem).")
+        return
 
     st.divider()
-    st.subheader("Biểu đồ theo rule")
-    g1, g2 = st.columns(2)
-    with g1:
-        th3 = cfg["R3"]["thresholds"]
-        st.plotly_chart(charts.credit_util_bar(data, th3.get("warn_pct", 0.85),
-                                               th3.get("violate_pct", 1.0)),
-                        width="stretch")
-        st.plotly_chart(charts.bg_validity_funnel(
-            data, int(cfg["R4"]["thresholds"].get("min_days_before_expiry", 7))),
-            width="stretch")
-        st.plotly_chart(charts.bg_fulfillment_bar(data), width="stretch")
-        st.plotly_chart(charts.bg_validity_anomaly_bar(
-            data, int(cfg["R4"]["thresholds"].get("max_validity_days", 60))),
-            width="stretch")
-        st.plotly_chart(charts.channel_stuffing_bar(
-            data, cfg["R7"]["thresholds"].get("run_rate_multiplier", 3.0),
-            int(cfg["R7"]["thresholds"].get("run_rate_horizon_days", 30))),
-            width="stretch")
-    with g2:
-        st.plotly_chart(charts.dan_dung_hist(
-            data, cfg["R2"]["thresholds"].get("pct_threshold", 0.30)),
-            width="stretch")
-        st.plotly_chart(charts.order_sankey(data), width="stretch")
-        st.plotly_chart(charts.copper_overlay(data), width="stretch")
+    hc1, hc2 = st.columns([3, 1])
+    hc1.subheader("Biểu đồ phân tích theo nhóm")
+    open_all = hc2.toggle("Mở tất cả nhóm", value=False)
+    st.caption("Badge = số exception thuộc nhóm · bật **Mở tất cả** để xem nhanh.")
 
-    st.divider()
-    st.plotly_chart(charts.exception_trend(exc_f), width="stretch")
-    t1, t2 = st.columns(2)
-    with t1:
-        st.plotly_chart(charts.top_violators(exc_f, data, "nhan_vien_kd"),
-                        width="stretch")
-    with t2:
-        st.plotly_chart(charts.top_violators(exc_f, data, "khu_vuc"),
-                        width="stretch")
+    def _ex(rules_set):
+        return int(exc_f["rule_id"].isin(rules_set).sum()) if not exc_f.empty else 0
+
+    th4 = cfg["R4"]["thresholds"]
+    th3 = cfg["R3"]["thresholds"]
+    th7 = cfg["R7"]["thresholds"]
+
+    # Nhóm 1 — Báo giá & Chiết khấu (mặc định mở)
+    with st.expander(f"📋 Báo giá & Chiết khấu (R1 · R4 · R5 · R10) · "
+                     f"{_ex({'R1', 'R4', 'R5', 'R10'})} exception", expanded=True):
+        st.caption("ℹ️ R1 (chiết khấu vượt khung / thiếu chứng từ) & R10 (chiết khấu "
+                   "cũ) không có biểu đồ riêng — xem chi tiết ở trang **Exceptions**.")
+        a, b = st.columns(2)
+        with a:
+            st.plotly_chart(_compact(charts.bg_validity_funnel(
+                data, int(th4.get("min_days_before_expiry", 7)))), width="stretch")
+            st.plotly_chart(_compact(charts.bg_fulfillment_bar(data), 340),
+                            width="stretch")
+        with b:
+            st.plotly_chart(_compact(charts.bg_validity_anomaly_bar(
+                data, int(th4.get("max_validity_days", 60)))), width="stretch")
+
+    # Nhóm 2 — Giao hàng & Tín dụng
+    with st.expander(f"🚚 Giao hàng & Tín dụng (R3 · R6 · R9) · "
+                     f"{_ex({'R3', 'R6', 'R9'})} exception", expanded=open_all):
+        a, b = st.columns(2)
+        with a:
+            st.plotly_chart(_compact(charts.credit_util_bar(
+                data, th3.get("warn_pct", 0.85), th3.get("violate_pct", 1.0))),
+                width="stretch")
+        with b:
+            st.plotly_chart(_compact(charts.order_sankey(data)), width="stretch")
+
+    # Nhóm 3 — Kênh & Thị trường
+    with st.expander(f"📦 Kênh & Thị trường (R2 · R7 · R8) · "
+                     f"{_ex({'R2', 'R7', 'R8'})} exception", expanded=open_all):
+        a, b = st.columns(2)
+        with a:
+            st.plotly_chart(_compact(charts.dan_dung_hist(
+                data, cfg["R2"]["thresholds"].get("pct_threshold", 0.30))),
+                width="stretch")
+            st.plotly_chart(_compact(charts.copper_overlay(data)), width="stretch")
+        with b:
+            st.plotly_chart(_compact(charts.channel_stuffing_bar(
+                data, th7.get("run_rate_multiplier", 3.0),
+                int(th7.get("run_rate_horizon_days", 30)))), width="stretch")
+
+    # Nhóm 4 — Tổng hợp & Top vi phạm (bấm cột → danh sách vi phạm)
+    with st.expander(f"📈 Tổng hợp & Top vi phạm · {len(exc_f)} exception",
+                     expanded=open_all):
+        st.plotly_chart(_compact(charts.exception_trend(exc_f)), width="stretch")
+        t1, t2 = st.columns(2)
+        with t1:
+            ev_kd = st.plotly_chart(
+                _compact(charts.top_violators(exc_f, data, "nhan_vien_kd"), 320),
+                on_select="rerun", key="tv_kd", width="stretch")
+            _violator_drill(ev_kd, exc_f, data, "nhan_vien_kd", "nhân viên")
+        with t2:
+            ev_kv = st.plotly_chart(
+                _compact(charts.top_violators(exc_f, data, "khu_vuc"), 320),
+                on_select="rerun", key="tv_kv", width="stretch")
+            _violator_drill(ev_kv, exc_f, data, "khu_vuc", "khu vực")
 
 
 # ===========================================================================
@@ -516,9 +670,9 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
 def tab_exceptions(data: dict, exc_f: pd.DataFrame):
     page_header("🚨 Exceptions — Chi tiết cho Kiểm toán")
 
-    # bộ lọc nhanh trạng thái
-    cstat, cinfo = st.columns([2, 2])
-    with cstat:
+    # Hàng điều khiển: lọc trạng thái · số hiển thị · export (cùng hàng)
+    c1, c2, c3, c4 = st.columns([3, 1.4, 1.1, 1.1])
+    with c1:
         statuses = st.multiselect("Lọc nhanh theo trạng thái", EXCEPTION_STATUSES)
     view = exc_f.copy()
     if statuses:
@@ -527,87 +681,83 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
         view = (view.assign(_r=view["severity"].map(SEV_RANK).fillna(9))
                 .sort_values(["_r", "rule_id", "doi_tuong_id"])
                 .drop(columns="_r"))
-    with cinfo:
-        st.metric("Số exception hiển thị", len(view))
+    c2.metric("Số exception hiển thị", len(view))
+    if not view.empty:
+        c3.write("")
+        c3.download_button("⬇️ CSV", view.to_csv(index=False).encode("utf-8-sig"),
+                           "exceptions.csv", "text/csv", width="stretch")
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+            view.to_excel(xw, index=False, sheet_name="exceptions")
+        c4.write("")
+        c4.download_button("⬇️ Excel", buf.getvalue(), "exceptions.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           width="stretch")
 
     if view.empty:
         st.info("Không có exception khớp bộ lọc.")
         return
 
-    # Bảng exception
-    disp = view[["ma_exception", "key", "rule_id", "doi_tuong_type",
-                 "doi_tuong_id", "kh_da", "gia_tri", "ngay_phat_hien",
-                 "severity", "status", "nguoi_xu_ly"]].copy()
+    disp = view[["ma_exception", "rule_id", "doi_tuong_type", "doi_tuong_id",
+                 "kh_da", "gia_tri", "severity", "status"]].copy()
     disp["severity"] = disp["severity"].map(RAG_LABEL)
     disp["gia_tri"] = disp["gia_tri"].map(fmt_vnd)
     disp = disp.rename(columns={
-        "ma_exception": "Mã", "key": "Key", "rule_id": "Rule",
-        "doi_tuong_type": "Loại", "doi_tuong_id": "Đối tượng",
-        "kh_da": "Khách hàng/Dự án", "gia_tri": "Giá trị",
-        "ngay_phat_hien": "Ngày", "severity": "Mức", "status": "Trạng thái",
-        "nguoi_xu_ly": "Người xử lý"})
-    st.caption("👉 Bấm chọn một dòng để mở **chi tiết & xử lý** ở dưới. "
-               "Lưu ý: `Mã` (EX-…) đổi sau mỗi lần chạy lại; cột **Key** là "
-               "định danh ổn định để theo dõi.")
-    event = st.dataframe(disp, hide_index=True, width="stretch",
-                         on_select="rerun", selection_mode="single-row")
+        "ma_exception": "Mã", "rule_id": "Rule", "doi_tuong_type": "Loại",
+        "doi_tuong_id": "Đối tượng", "kh_da": "KH/DA", "gia_tri": "Giá trị",
+        "severity": "Mức", "status": "Trạng thái"})
 
-    # Export (bao gồm cột key ổn định)
-    cex1, cex2, _ = st.columns([1, 1, 4])
-    with cex1:
-        st.download_button("⬇️ Export CSV", view.to_csv(index=False).encode("utf-8-sig"),
-                           "exceptions.csv", "text/csv", width="stretch")
-    with cex2:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-            view.to_excel(xw, index=False, sheet_name="exceptions")
-        st.download_button("⬇️ Export Excel", buf.getvalue(),
-                           "exceptions.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           width="stretch")
-
-    # Panel chi tiết
-    rows = event.selection.rows if event and event.selection else []
-    if not rows:
-        st.info("Chọn một dòng trong bảng để xem chi tiết & xử lý.")
-        return
-    row = view.iloc[rows[0]]
-    st.divider()
-    st.subheader(f"Chi tiết {row['ma_exception']} · {row['rule_id']} — "
-                 f"{RULE_REGISTRY[row['rule_id']]['name']}")
-
-    cdetail, cwf = st.columns([3, 2])
-    with cdetail:
-        st.markdown(f"**Mức:** {sev_badge(row['severity'])}  ·  "
-                    f"**Đối tượng:** {row['doi_tuong_type']} `{row['doi_tuong_id']}`  ·  "
-                    f"**Khách hàng/Dự án:** {row['kh_da']}")
-        st.markdown(f"**Giá trị:** {fmt_vnd(row['gia_tri'])}  ·  "
-                    f"**Ngày:** {row['ngay_phat_hien']}")
-        st.markdown(f"**Lý do trigger:** {row['ly_do']}")
-        st.markdown("**Dữ liệu gốc (snapshot):**")
-        st.dataframe(_source_records(data, row), hide_index=True,
-                     width="stretch")
-
-    with cwf:
-        st.markdown("**Workflow trạng thái**")
-        cur_status = row["status"]
-        new_status = st.selectbox("Trạng thái", EXCEPTION_STATUSES,
-                                  index=EXCEPTION_STATUSES.index(cur_status)
-                                  if cur_status in EXCEPTION_STATUSES else 0)
-        assignee = st.text_input("Gán người xử lý", value=row.get("nguoi_xu_ly", ""))
-        note = st.text_area("Ghi chú KT / lý do", value=row.get("ghi_chu", ""))
-        if st.button("✅ Cập nhật trạng thái", type="primary"):
-            store.update_status(row["key"], new_status, user="ktnb",
-                                note=note, nguoi_xu_ly=assignee)
-            st.success("Đã cập nhật (ghi audit + lịch sử).")
-            st.rerun()
-        st.markdown("**Lịch sử trạng thái**")
-        hist = store.get_history(row["key"])
-        if hist:
-            st.dataframe(pd.DataFrame(hist), hide_index=True,
-                         width="stretch")
+    left, right = st.columns([3, 2], gap="medium")
+    with left:
+        st.caption("👉 Bấm chọn một dòng → **chi tiết hiển thị bên phải**.")
+        event = st.dataframe(disp, hide_index=True, width="stretch", height=460,
+                             on_select="rerun", selection_mode="single-row")
+    with right:
+        rows = event.selection.rows if event and event.selection else []
+        if not rows:
+            st.info("Chọn một dòng ở bảng bên trái để xem chi tiết, "
+                    "timeline & xử lý.")
         else:
-            st.caption("Chưa có lịch sử (Open).")
+            _exception_detail(data, view.iloc[rows[0]])
+
+
+def _exception_detail(data: dict, row: pd.Series):
+    """Panel chi tiết 1 exception: dữ liệu gốc + timeline + workflow + bằng chứng."""
+    st.markdown(f"**{row['ma_exception']} · {row['rule_id']}** — "
+                f"{RULE_REGISTRY[row['rule_id']]['name']}")
+    st.markdown(f"**Mức:** {sev_badge(row['severity'])} · **Đối tượng:** "
+                f"{row['doi_tuong_type']} `{row['doi_tuong_id']}` · "
+                f"**KH/DA:** {row['kh_da']} · **Giá trị:** {fmt_vnd(row['gia_tri'])}")
+    st.markdown(f"**Lý do trigger:** {row['ly_do']}")
+    with st.expander("Dữ liệu gốc (snapshot)", expanded=False):
+        st.dataframe(_source_records(data, row), hide_index=True, width="stretch")
+    st.markdown("**Timeline case**")
+    _t, _oid = row["doi_tuong_type"], row["doi_tuong_id"]
+    st.plotly_chart(charts.case_timeline(
+        data, ma_don=_oid if _t == "Đơn hàng" else None,
+        ma_bg=_oid if _t == "Báo giá" else None), width="stretch")
+
+    st.markdown("**Workflow xử lý**")
+    cur_status = row["status"]
+    new_status = st.selectbox("Trạng thái", EXCEPTION_STATUSES,
+                              index=EXCEPTION_STATUSES.index(cur_status)
+                              if cur_status in EXCEPTION_STATUSES else 0)
+    assignee = st.text_input("Gán người xử lý", value=row.get("nguoi_xu_ly", ""))
+    note = st.text_area("Ghi chú KT / lý do", value=row.get("ghi_chu", ""))
+    evidence = st.text_input("Link bằng chứng (Zalo / URL / hồ sơ)",
+                             value=row.get("bang_chung", ""),
+                             placeholder="https://… hoặc link chat Zalo")
+    if row.get("bang_chung"):
+        st.caption(f"📎 Bằng chứng hiện tại: {row['bang_chung']}")
+    if st.button("✅ Cập nhật", type="primary"):
+        store.update_status(row["key"], new_status, user="ktnb", note=note,
+                            nguoi_xu_ly=assignee, evidence=evidence)
+        st.success("Đã cập nhật (ghi audit + lịch sử).")
+        st.rerun()
+    hist = store.get_history(row["key"])
+    if hist:
+        with st.expander("Lịch sử trạng thái", expanded=False):
+            st.dataframe(pd.DataFrame(hist), hide_index=True, width="stretch")
 
 
 def _source_records(data: dict, row: pd.Series) -> pd.DataFrame:
@@ -625,6 +775,103 @@ def _source_records(data: dict, row: pd.Series) -> pd.DataFrame:
     except Exception:
         pass
     return pd.DataFrame()
+
+
+# ===========================================================================
+# TAB 0 — HƯỚNG DẪN (landing)
+# ===========================================================================
+FLOW_STEPS = [
+    ("1️⃣ Khung chiết khấu", "KD Dự án", "Ban hành & thông báo khung CK chuẩn đến đại lý", "R1 · R10", "#7BB662"),
+    ("2️⃣ Thẩm định DA", "KD Dự án", "Dự án ≥ 100tr · đề xuất CK ≤ khung", "R2 · R5", "#7BB662"),
+    ("3️⃣ TGĐ duyệt CK", "Tổng Giám đốc", "Duyệt qua Zalo · hiệu lực báo giá 60 ngày, không gia hạn", "R1 · R4", "#E03C32"),
+    ("4️⃣ Cọc & Công nợ", "Kế toán", "Xác nhận cọc ≥ 15% · kiểm tra công nợ trước xuất hóa đơn", "R3 · R9", "#E6B400"),
+    ("5️⃣ Đặt đơn & Giao", "KD Dự án", "Nhận đặt đơn ≥ 7 ngày trước hạn · vận chuyển", "R4 · R6 · R7 · R8", "#7BB662"),
+    ("6️⃣ Thanh toán", "Kế toán", "Trả chậm ≤ 60 ngày nếu có bảo lãnh/ký quỹ", "R3", "#E6B400"),
+]
+
+
+def tab_guide(data: dict, cfg: dict):
+    page_header("📖 Hướng dẫn — Demo Giám sát Bán hàng Dự án")
+    st.markdown(
+        "Ứng dụng **giám sát liên tục (continuous monitoring)** rủi ro trong quy "
+        "trình bán hàng dự án (dây & cáp điện): tự động quét toàn bộ giao dịch theo "
+        "**10 rule**, sinh **exception** và hỗ trợ điều tra — xử lý — báo cáo.")
+
+    st.subheader("1) Hai trụ Kiểm soát tự động")
+    g1, g2 = st.columns(2)
+    g1.markdown(pillar_card(
+        "🔍", "Continuous Monitoring", "Giám sát 100% giao dịch theo rule tự động",
+        "Rule engine R1–R10 quét báo giá · đơn hàng · cọc · công nợ…", "#1C6EA4"),
+        unsafe_allow_html=True)
+    g2.markdown(pillar_card(
+        "✅", "Continuous Reporting", "Dashboard thời gian thực cho Ban lãnh đạo",
+        "Scorecard RAG · heatmap · drill-down · cảnh báo định tuyến", "#2E8B57"),
+        unsafe_allow_html=True)
+
+    st.subheader("2) Luồng quy trình chuẩn & điểm kiểm soát (trái → phải)")
+    boxes = ""
+    for title, pb, desc, rules_, color in FLOW_STEPS:
+        boxes += (
+            f'<div style="flex:1 1 150px;min-width:150px;border:1px solid #E2E5E9;'
+            f'border-top:4px solid {color};border-radius:10px;padding:10px 12px;background:#fff;">'
+            f'<div style="font-weight:700;font-size:13.5px;">{title}</div>'
+            f'<div style="font-size:11.5px;color:#555;font-weight:600;margin-top:2px;">{pb}</div>'
+            f'<div style="font-size:12px;color:#444;margin:6px 0;">{desc}</div>'
+            f'<div style="font-size:11.5px;color:#E03C32;font-weight:600;">Rule: {rules_}</div></div>')
+    st.markdown(f'<div style="display:flex;gap:10px;flex-wrap:wrap;">{boxes}</div>',
+                unsafe_allow_html=True)
+    st.caption("Ngưỡng nghiệp vụ chốt: DA ≥100tr · cọc ≥15% · báo giá 60 ngày "
+               "(không gia hạn) · đặt đơn ≥7 ngày trước hạn · trả chậm ≤60 ngày "
+               "khi có bảo lãnh · không phát sinh theo chiết khấu cũ.")
+
+    st.subheader("3) Bộ 10 rule giám sát")
+    reg = []
+    for rid in RULES_BY_SEVERITY:
+        m = RULE_REGISTRY[rid]
+        reg.append({"Rule": rid, "Mức": RAG_LABEL[m["severity"]], "Nhóm": m["group"],
+                    "Tên": m["name"], "Mô tả": m["desc"],
+                    "Bật": "✓" if cfg.get(rid, {}).get("enabled", True) else "—"})
+    st.dataframe(pd.DataFrame(reg), hide_index=True, width="stretch")
+
+    st.subheader("4) Các trang & cách dùng")
+    st.markdown(
+        "- **📖 Hướng dẫn** — trang này: luồng, rule, cách dùng.\n"
+        "- **📊 Monitoring** (cho Ban lãnh đạo) — 2 trụ, scorecard RAG, cảnh báo mới "
+        "nhất, tóm tắt nhanh (top rule/khu vực, tuổi exception), bản đồ nhiệt "
+        "(**bấm ô để drill-down**), biểu đồ theo rule.\n"
+        "- **🚨 Exceptions** (cho Kiểm toán nội bộ) — danh sách exception, **chọn dòng** "
+        "để xem dữ liệu gốc + **timeline case** + xử lý workflow; export CSV/Excel.\n"
+        "- **⚙️ Config** — bật/tắt rule, chỉnh ngưỡng (ghi audit), định tuyến cảnh "
+        "báo, ma trận phân quyền, nguồn dữ liệu.\n\n"
+        "**Bộ lọc** nằm ở đầu mỗi trang (ngày · nhân viên KD · khu vực · khách hàng "
+        "· rule · mức). **Vai trò** chọn ở sidebar: *Ban điều hành* chỉ thấy "
+        "Monitoring; *Kiểm toán nội bộ* thấy tất cả.")
+
+    st.subheader("5) Ma trận Rule × Điểm kiểm soát")
+    rule_control = {
+        "R1": "TGĐ duyệt chiết khấu · Khung chiết khấu",
+        "R2": "Thẩm định DA — cơ cấu giá (dân dụng/dự án)",
+        "R3": "Công nợ / Thanh toán (hạn mức, trả chậm, giao hàng)",
+        "R4": "Hiệu lực báo giá · thời điểm đặt đơn",
+        "R5": "Thẩm định DA — dữ liệu danh mục (master)",
+        "R6": "Toàn chuỗi bước kiểm soát (đặt→cọc→công nợ→giao)",
+        "R7": "Đặt đơn — tồn kho đại lý",
+        "R8": "Đặt đơn — biến động giá đồng",
+        "R9": "Xác nhận cọc ≥ 15%",
+        "R10": "Khung chiết khấu · đặt đơn",
+    }
+    mt = pd.DataFrame([{
+        "Rule": r, "Mức": RAG_LABEL[RULE_REGISTRY[r]["severity"]],
+        "Điểm kiểm soát": rule_control.get(r, ""),
+        "Tên rule": RULE_REGISTRY[r]["name"]} for r in RULES_BY_SEVERITY])
+    st.dataframe(mt, hide_index=True, width="stretch")
+
+    st.subheader("6) Quy trình xử lý exception")
+    st.markdown("`Open → Đang rà soát → ` ┬ ` Đã giải trình (đóng)` / "
+                "`Xác nhận vi phạm → Escalate BOM → Đóng`")
+    st.info("⚠️ Toàn bộ dữ liệu trong demo là **giả lập** (1 công ty · 11 chi nhánh/"
+            "đại lý), có cài sẵn vi phạm cho cả 10 rule. Cảnh báo đang ở chế độ "
+            "**stub** (ghi log, chưa gửi thật).")
 
 
 # ===========================================================================
@@ -647,14 +894,24 @@ def main():
     except Exception:                           # FS chỉ đọc trên cloud → bỏ qua
         pass
 
+    # Drill-down từ heatmap: áp filter + chuyển trang TRƯỚC khi tạo widget
+    drill = st.session_state.pop("_drill", None)
+    if drill:
+        st.session_state["flt_rule"] = [drill["rule"]]
+        kv_opts = sorted(data["order"]["khu_vuc"].dropna().unique())
+        st.session_state["flt_kv"] = [drill["kv"]] if drill["kv"] in kv_opts else []
+        st.session_state["nav_page"] = "🚨 Exceptions"
+
     role, page = sidebar_nav()
 
-    if page == "⚙️ Config":
+    if page == "📖 Hướng dẫn":
+        tab_guide(data, cfg)
+    elif page == "⚙️ Config":
         tab_config(data, exc_all)
     elif page == "📊 Monitoring":
         flt = render_filters(data, exc_all)
         exc_f = apply_filters(exc_all, data, flt)
-        tab_monitoring(data, exc_all, exc_f, cfg)
+        tab_monitoring(data, exc_all, exc_f, cfg, role)
     elif page == "🚨 Exceptions":
         flt = render_filters(data, exc_all)
         exc_f = apply_filters(exc_all, data, flt)

@@ -189,12 +189,20 @@ def dan_dung_hist(data: dict, threshold: float = 0.30) -> go.Figure:
                 .groupby("ma_don")["gia_tri"].sum())
     ratios = (dan_dung.reindex(total.index).fillna(0)
               / total.replace(0, 1)).values
-    fig = px.histogram(x=ratios, nbins=20, template=TEMPLATE,
-                       color_discrete_sequence=[RAG_COLORS["xanh"]])
+    # Histogram thủ công để tô đỏ các bin VƯỢT ngưỡng
+    hi = max(0.5, float(ratios.max()) if len(ratios) else 0.5)
+    counts, edges = np.histogram(ratios, bins=20, range=(0, hi))
+    centers = (edges[:-1] + edges[1:]) / 2
+    colors = [RAG_COLORS["do"] if c > threshold else RAG_COLORS["xanh"]
+              for c in centers]
+    fig = go.Figure(go.Bar(
+        x=centers, y=counts, width=(edges[1] - edges[0]) * 0.95,
+        marker_color=colors,
+        hovertemplate="Tỷ lệ dân dụng ~%{x:.0%}<br>Số đơn: %{y}<extra></extra>"))
     fig.add_vline(x=threshold, line_dash="dash", line_color=RAG_COLORS["do"],
                   annotation_text=f"ngưỡng {threshold:.0%}")
-    fig.update_layout(height=320,
-                      title="R2 — Phân bố tỷ lệ dây dân dụng/đơn",
+    fig.update_layout(template=TEMPLATE, height=320,
+                      title="R2 — Phân bố tỷ lệ dây dân dụng/đơn (đỏ = vượt ngưỡng)",
                       xaxis_tickformat=".0%", xaxis_title="Tỷ lệ dân dụng",
                       yaxis_title="Số đơn", showlegend=False)
     return fig
@@ -387,6 +395,50 @@ def exception_trend(exc: pd.DataFrame, freq: str = "W") -> go.Figure:
     fig.update_layout(height=320, title="Xu hướng exception theo thời gian",
                       xaxis_title="Kỳ", yaxis_title="Số exception",
                       legend_title="Mức")
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Timeline 1 case (Báo giá → duyệt → cọc → đặt đơn → giao → thanh toán)
+# ---------------------------------------------------------------------------
+def case_timeline(data: dict, ma_don=None, ma_bg=None) -> go.Figure:
+    bg, orders = data["bao_gia"], data["order"]
+    coc, ev = data["coc"], data["event_log"]
+    if ma_don and not ma_bg:
+        o = orders[orders["ma_don"] == ma_don]
+        if not o.empty:
+            ma_bg = o.iloc[0]["ma_bg"]
+    rows = []
+    if ma_bg:
+        b = bg[bg["ma_bg"] == ma_bg]
+        if not b.empty:
+            rows.append(("Báo giá tạo", b.iloc[0]["ngay_tao"]))
+            rows.append(("Báo giá hết hiệu lực", b.iloc[0]["ngay_het_hieu_luc"]))
+    if ma_don:
+        o = orders[orders["ma_don"] == ma_don]
+        if not o.empty:
+            rows.append(("Đặt đơn", o.iloc[0]["ngay_dat"]))
+        c = coc[coc["ma_don"] == ma_don]
+        if not c.empty:
+            rows.append(("Đặt cọc", c.iloc[0]["ngay"]))
+        e = ev[ev["ma_don"] == ma_don].sort_values("thu_tu")
+        for _, r in e.iterrows():
+            rows.append((STEP_LABEL.get(r["buoc"], r["buoc"]), r["timestamp"]))
+    df = pd.DataFrame(rows, columns=["moc", "thoi_diem"])
+    df["thoi_diem"] = pd.to_datetime(df["thoi_diem"], errors="coerce")
+    df = df.dropna(subset=["thoi_diem"]).sort_values("thoi_diem").reset_index(drop=True)
+    if df.empty:
+        return _empty("Không đủ dữ liệu để dựng timeline cho case này")
+    fig = go.Figure(go.Scatter(
+        x=df["thoi_diem"], y=list(range(len(df))), mode="markers+lines+text",
+        text=df["moc"], textposition="middle right",
+        line=dict(color="#c9ced6"), marker=dict(size=13, color=RAG_COLORS["do"]),
+        hovertemplate="%{text}<br>%{x|%d/%m/%Y}<extra></extra>"))
+    fig.update_layout(template=TEMPLATE, height=300,
+                      title=f"Timeline case · {ma_don or ma_bg}",
+                      xaxis_title="Thời gian", showlegend=False,
+                      yaxis=dict(visible=False),
+                      margin=dict(l=10, r=140, t=46, b=10))
     return fig
 
 

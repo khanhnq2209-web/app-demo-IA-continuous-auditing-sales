@@ -53,11 +53,13 @@ def apply_status(exc: pd.DataFrame) -> pd.DataFrame:
     exc["nguoi_xu_ly"] = exc["key"].map(
         lambda k: store.get(k, {}).get("nguoi_xu_ly", ""))
     exc["ghi_chu"] = exc["key"].map(lambda k: store.get(k, {}).get("note", ""))
+    exc["bang_chung"] = exc["key"].map(lambda k: store.get(k, {}).get("evidence", ""))
     return exc
 
 
 def update_status(key: str, status: str, user: str = "ktnb",
-                  note: str = "", nguoi_xu_ly: str | None = None) -> None:
+                  note: str = "", nguoi_xu_ly: str | None = None,
+                  evidence: str | None = None) -> None:
     """Cập nhật trạng thái 1 exception + ghi audit + lưu lịch sử chuyển trạng thái."""
     store = _load()
     rec = store.get(key, {"status": "Open", "nguoi_xu_ly": "", "note": "",
@@ -68,6 +70,8 @@ def update_status(key: str, status: str, user: str = "ktnb",
         rec["nguoi_xu_ly"] = nguoi_xu_ly
     if note:
         rec["note"] = note
+    if evidence is not None:
+        rec["evidence"] = evidence
     rec.setdefault("history", []).append({
         "time": datetime.now().isoformat(timespec="seconds"),
         "user": user, "from": old, "to": status, "note": note,
