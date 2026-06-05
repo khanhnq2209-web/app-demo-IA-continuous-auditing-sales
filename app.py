@@ -19,8 +19,9 @@ import streamlit as st
 
 from src import (alerts, audit, charts, config_manager, data_loader, rules,
                  store)
-from src.schema import (ALL_RULE_IDS, EXCEPTION_STATUSES, ENTITIES,
-                        RAG_LABEL, RULE_REGISTRY)
+from src.schema import (ALL_RULE_IDS, EXCEPTION_STATUSES, ENTITIES, RAG_LABEL,
+                        RULES_BY_SEVERITY, RULES_BY_THRESHOLD, RULE_REGISTRY,
+                        SEV_RANK)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -96,6 +97,35 @@ def fmt_vnd_short(x) -> str:
     if abs(x) >= 1e6:
         return f"{x / 1e6:,.0f} triệu ₫"
     return f"{x:,.0f} ₫"
+
+
+# Màu chữ + nền nhẹ cho card theo mức RAG (chữ đủ đậm để đọc trên nền sáng)
+RAG_CARD = {"do": ("#E03C32", "#FDECEA"), "vang": ("#B8860B", "#FFF8E1"),
+            "xanh": ("#5A8F3C", "#EEF6E9")}
+
+
+def metric_card(label: str, value, sub: str = "", color: str = "#1A1A1A",
+                border: str = "#E2E5E9", bg: str = "#F8FAFC") -> str:
+    """HTML một ô số có viền + nền nhẹ (card) để nhìn rõ."""
+    sub_html = (f'<div style="font-size:12.5px;margin-top:4px;">{sub}</div>'
+                if sub else "")
+    return (
+        f'<div style="border:1px solid {border};background:{bg};border-radius:12px;'
+        f'padding:12px 14px;text-align:center;min-height:108px;'
+        f'box-shadow:0 1px 2px rgba(0,0,0,.05);">'
+        f'<div style="font-size:14px;color:{color};font-weight:600;">{label}</div>'
+        f'<div style="font-size:38px;font-weight:700;line-height:1.2;color:{color};">'
+        f'{value}</div>{sub_html}</div>')
+
+
+def pillar_card(icon: str, title: str, subtitle: str, stat: str, bg: str) -> str:
+    """Banner một 'trụ' (Continuous Monitoring / Reporting) — nền màu, chữ trắng."""
+    return (
+        f'<div style="background:{bg};border-radius:14px;padding:16px 20px;'
+        f'color:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15);min-height:120px;">'
+        f'<div style="font-size:16px;font-weight:700;letter-spacing:.3px;">{icon} {title}</div>'
+        f'<div style="font-size:13.5px;opacity:.93;margin-top:5px;">{subtitle}</div>'
+        f'<div style="font-size:20px;font-weight:700;margin-top:9px;">{stat}</div></div>')
 
 
 def sev_badge(sev: str) -> str:
@@ -209,8 +239,9 @@ def tab_config(data: dict, exc_all: pd.DataFrame):
 
     # --- Rule Registry -----------------------------------------------------
     st.subheader("1) Rule Registry")
+    st.caption("Sắp xếp ưu tiên: 🔴 Cao → 🟡 Trung bình → 🟢 Thông tin.")
     reg_rows = []
-    for rid in ALL_RULE_IDS:
+    for rid in RULES_BY_SEVERITY:
         meta = RULE_REGISTRY[rid]
         c = cfg.get(rid, {})
         reg_rows.append({
@@ -242,7 +273,8 @@ def tab_config(data: dict, exc_all: pd.DataFrame):
 
     # --- Ngưỡng (thresholds) ----------------------------------------------
     st.subheader("2) Ngưỡng rule (editable)")
-    rid = st.selectbox("Chọn rule để chỉnh ngưỡng", ALL_RULE_IDS,
+    st.caption("Rule có ngưỡng số (chỉnh được) hiển thị trước.")
+    rid = st.selectbox("Chọn rule để chỉnh ngưỡng", RULES_BY_THRESHOLD,
                        format_func=lambda r: f"{r} — {RULE_REGISTRY[r]['name']}")
     th = cfg[rid].get("thresholds", {})
     st.caption(RULE_REGISTRY[rid]["desc"])
@@ -374,6 +406,22 @@ def tab_config(data: dict, exc_all: pd.DataFrame):
 def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: dict):
     page_header("📊 Monitoring — Giám sát rủi ro cấp cao")
 
+    # --- 2 trụ Kiểm soát tự động (theo slide đề xuất) ---------------------
+    n_txn = len(data["order"]) + len(data["bao_gia"])
+    n_rule_on = sum(1 for r in ALL_RULE_IDS if cfg.get(r, {}).get("enabled", True))
+    st.caption("**Kiểm soát tự động:** giám sát liên tục toàn bộ giao dịch theo "
+               "rule, phát hiện bất thường và cảnh báo để hỗ trợ ra quyết định.")
+    p1, p2 = st.columns(2)
+    p1.markdown(pillar_card(
+        "🔍", "Continuous Monitoring", "Giám sát 100% giao dịch theo rule tự động",
+        f"Đã quét {n_txn:,} giao dịch · {n_rule_on}/{len(ALL_RULE_IDS)} rule đang bật",
+        "#1C6EA4"), unsafe_allow_html=True)
+    p2.markdown(pillar_card(
+        "✅", "Continuous Reporting", "Dashboard thời gian thực cho Ban lãnh đạo",
+        f"{len(exc_all)} exception phát hiện · cập nhật {data_token_human()}",
+        "#2E8B57"), unsafe_allow_html=True)
+    st.write("")
+
     # Scorecard = TỔNG trong khoảng lọc (không kèm delta để tránh hiểu nhầm).
     summ = rules.summary_by_severity(exc_f)
     today = pd.Timestamp(pd.Timestamp.now().date())
@@ -386,25 +434,37 @@ def tab_monitoring(data: dict, exc_all: pd.DataFrame, exc_f: pd.DataFrame, cfg: 
     cur_summ = rules.summary_by_severity(cur30)
     prev_summ = rules.summary_by_severity(prev30)
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.markdown("**Tổng exception đang mở — theo bộ lọc & khoảng ngày**")
-        st.plotly_chart(charts.scorecard(summ), width="stretch")
-        st.caption("Con số là TỔNG trong khoảng ngày đang lọc (không phải theo tháng).")
-    with c2:
-        tong = exc_f["gia_tri"].sum() if not exc_f.empty else 0
-        st.metric("Tổng giá trị rủi ro", fmt_vnd_short(tong),
-                  help=fmt_vnd(tong))
-        st.metric("Tổng exception", len(exc_f))
+    labels = {"do": "🔴 Cao", "vang": "🟡 Trung bình", "xanh": "🟢 Thông tin"}
+    tong = exc_f["gia_tri"].sum() if not exc_f.empty else 0
+
+    st.markdown("**Tổng exception đang mở — theo bộ lọc & khoảng ngày**")
+    cols = st.columns(5)
+    for col, sev in zip(cols[:3], ["do", "vang", "xanh"]):
+        color, bg = RAG_CARD[sev]
+        col.markdown(metric_card(labels[sev], summ[sev], color=color,
+                                 border=color, bg=bg), unsafe_allow_html=True)
+    cols[3].markdown(metric_card("Tổng giá trị rủi ro", fmt_vnd_short(tong),
+                                 sub=f'<span style="color:#6b7280">{fmt_vnd(tong)}</span>'),
+                     unsafe_allow_html=True)
+    cols[4].markdown(metric_card("Tổng exception", f"{len(exc_f)}"),
+                     unsafe_allow_html=True)
+    st.caption("**Tổng giá trị rủi ro** = tổng giá trị đối tượng (đơn / báo giá / "
+               "dư nợ) của các exception đang hiển thị · con số là **TỔNG** trong "
+               "khoảng ngày đang lọc, không phải theo tháng.")
 
     st.markdown("**Δ 30 ngày gần nhất so với 30 ngày liền trước** "
                 "(theo ngày phát sinh)")
-    dcols = st.columns(3)
-    for col, sev, lbl in zip(dcols, ["do", "vang", "xanh"],
-                             ["🔴 Cao", "🟡 Trung bình", "🟢 Thông tin"]):
-        with col:
-            st.metric(lbl, cur_summ[sev], delta=cur_summ[sev] - prev_summ[sev],
-                      delta_color="inverse")
+    dcols = st.columns(5)
+    for col, sev in zip(dcols[:3], ["do", "vang", "xanh"]):
+        diff = cur_summ[sev] - prev_summ[sev]
+        if diff > 0:
+            sub = f'<span style="color:#E03C32;font-weight:600;">▲ +{diff}</span> so với kỳ trước'
+        elif diff < 0:
+            sub = f'<span style="color:#7BB662;font-weight:600;">▼ {diff}</span> so với kỳ trước'
+        else:
+            sub = '<span style="color:#9ca3af;">— không đổi</span>'
+        col.markdown(metric_card(labels[sev], cur_summ[sev], sub=sub),
+                     unsafe_allow_html=True)
 
     st.divider()
 
@@ -463,6 +523,10 @@ def tab_exceptions(data: dict, exc_f: pd.DataFrame):
     view = exc_f.copy()
     if statuses:
         view = view[view["status"].isin(statuses)]
+    if not view.empty:                       # 🔴 Cao → 🟡 → 🟢 lên trước
+        view = (view.assign(_r=view["severity"].map(SEV_RANK).fillna(9))
+                .sort_values(["_r", "rule_id", "doi_tuong_id"])
+                .drop(columns="_r"))
     with cinfo:
         st.metric("Số exception hiển thị", len(view))
 

@@ -118,8 +118,11 @@ def rag_heatmap(exc: pd.DataFrame, data: dict, col_dim: str = "khu_vuc") -> go.F
     if exc is None or exc.empty:
         return _empty("Chưa có exception để vẽ heatmap")
     en = enrich_exceptions(exc, data)
+    # Rule 🔴 (đỏ) → 🟡 → 🟢; trong cùng mức theo số thứ tự
+    sev_rank = {"do": 0, "vang": 1, "xanh": 2}
+    sev_of = en.groupby("rule_id")["severity"].first().to_dict()
     rules = sorted(en["rule_id"].unique(),
-                   key=lambda r: int(r[1:]))
+                   key=lambda r: (sev_rank.get(sev_of.get(r), 9), int(r[1:])))
     cols = sorted(en[col_dim].unique())
     mat = (en.groupby(["rule_id", col_dim]).size()
            .unstack(fill_value=0).reindex(index=rules, columns=cols, fill_value=0))
@@ -132,6 +135,7 @@ def rag_heatmap(exc: pd.DataFrame, data: dict, col_dim: str = "khu_vuc") -> go.F
     fig.update_layout(template=TEMPLATE, height=420,
                       title="Bản đồ nhiệt rủi ro — Rule × Khu vực (dùng bộ lọc phía trên)",
                       xaxis_title=col_dim, yaxis_title="Rule")
+    fig.update_yaxes(autorange="reversed")   # rule 🔴 (đầu danh sách) lên trên cùng
     return fig
 
 

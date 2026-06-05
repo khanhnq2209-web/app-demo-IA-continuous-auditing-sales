@@ -175,6 +175,27 @@ RULE_REGISTRY: dict[str, dict] = {
 
 ALL_RULE_IDS = list(RULE_REGISTRY.keys())
 
+# Thứ tự ưu tiên hiển thị
+SEV_RANK = {"do": 0, "vang": 1, "xanh": 2}
+
+
+def has_numeric_threshold(rule_id: str) -> bool:
+    th = RULE_REGISTRY.get(rule_id, {}).get("thresholds", {})
+    return any(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in th.values())
+
+
+# Rule 🔴 (đỏ) → 🟡 → 🟢, trong cùng mức thì theo số thứ tự
+RULES_BY_SEVERITY = sorted(
+    ALL_RULE_IDS,
+    key=lambda r: (SEV_RANK[RULE_REGISTRY[r]["severity"]], int(r[1:])))
+
+# Rule có ngưỡng số (editable) hiển thị trước, rồi tới mức độ, rồi số thứ tự
+RULES_BY_THRESHOLD = sorted(
+    ALL_RULE_IDS,
+    key=lambda r: (0 if has_numeric_threshold(r) else 1,
+                   SEV_RANK[RULE_REGISTRY[r]["severity"]], int(r[1:])))
+
 # Trạng thái xử lý exception (workflow Tab 3)
 EXCEPTION_STATUSES = [
     "Open",
